@@ -3,31 +3,103 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 class TenantEditProfile extends StatefulWidget {
-  const TenantEditProfile({super.key});
+  // Receive current values from profile
+  final String name;
+  final String email;
+  final String birthday;
+  final String gender;
+  final String address;
+  final String contactNumber;
+  final String guardianContact;
+
+  final String moveIn;
+  final String monthlyRent;
+  final String roomNo;
+  final String floorNo;
+
+  final String? avatarPath;
+
+  const TenantEditProfile({
+    super.key,
+    required this.name,
+    required this.email,
+    required this.birthday,
+    required this.gender,
+    required this.address,
+    required this.contactNumber,
+    required this.guardianContact,
+    required this.moveIn,
+    required this.monthlyRent,
+    required this.roomNo,
+    required this.floorNo,
+    this.avatarPath,
+  });
 
   @override
   State<TenantEditProfile> createState() => _TenantEditProfileState();
 }
 
 class _TenantEditProfileState extends State<TenantEditProfile> {
-  // Controllers for disabled fields
-  final TextEditingController moveInController = TextEditingController(
-    text: "August 21, 2025",
-  );
-  final TextEditingController rentController = TextEditingController(
-    text: "₱3,750",
-  );
-  final TextEditingController roomNoController = TextEditingController(
-    text: "L206",
-  );
-  final TextEditingController floorController = TextEditingController(
-    text: "3rd Floor",
-  );
+  // Editable Controllers
+  late final TextEditingController nameCtrl;
+  late final TextEditingController emailCtrl;
+  late final TextEditingController birthdayCtrl;
+  late final TextEditingController genderCtrl;
+  late final TextEditingController addressCtrl;
+  late final TextEditingController contactCtrl;
+  late final TextEditingController guardianCtrl;
+
+  // Read-only Controllers
+  late final TextEditingController moveInController;
+  late final TextEditingController rentController;
+  late final TextEditingController roomNoController;
+  late final TextEditingController floorController;
 
   File? _profileImage;
+  String? _avatarPath;
   final ImagePicker _picker = ImagePicker();
 
-  // Function to pick image
+  @override
+  void initState() {
+    super.initState();
+
+    nameCtrl = TextEditingController(text: widget.name);
+    emailCtrl = TextEditingController(text: widget.email);
+    birthdayCtrl = TextEditingController(text: widget.birthday);
+    genderCtrl = TextEditingController(text: widget.gender);
+    addressCtrl = TextEditingController(text: widget.address);
+    contactCtrl = TextEditingController(text: widget.contactNumber);
+    guardianCtrl = TextEditingController(text: widget.guardianContact);
+
+    moveInController = TextEditingController(text: widget.moveIn);
+    rentController = TextEditingController(text: widget.monthlyRent);
+    roomNoController = TextEditingController(text: widget.roomNo);
+    floorController = TextEditingController(text: widget.floorNo);
+
+    _avatarPath = widget.avatarPath;
+    if (_avatarPath != null && _avatarPath!.isNotEmpty) {
+      final f = File(_avatarPath!);
+      if (f.existsSync()) _profileImage = f;
+    }
+  }
+
+  @override
+  void dispose() {
+    nameCtrl.dispose();
+    emailCtrl.dispose();
+    birthdayCtrl.dispose();
+    genderCtrl.dispose();
+    addressCtrl.dispose();
+    contactCtrl.dispose();
+    guardianCtrl.dispose();
+
+    moveInController.dispose();
+    rentController.dispose();
+    roomNoController.dispose();
+    floorController.dispose();
+    super.dispose();
+  }
+
   Future<void> _pickImage() async {
     final pickedFile = await _picker.pickImage(
       source: ImageSource.gallery,
@@ -37,35 +109,58 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
     if (pickedFile != null) {
       setState(() {
         _profileImage = File(pickedFile.path);
+        _avatarPath = pickedFile.path;
       });
     }
   }
 
-  // Example: Show Date Picker for Move-in Date
   Future<void> _selectMoveInDate() async {
     DateTime? picked = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
       firstDate: DateTime(2020),
-      lastDate: DateTime(2030),
+      lastDate: DateTime(2035),
     );
 
     if (picked != null) {
       setState(() {
-        moveInController.text = "${picked.month}/${picked.day}/${picked.year}";
+        moveInController.text =
+            "${picked.year.toString().padLeft(4, '0')}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
       });
     }
   }
 
+  void _saveAndClose() {
+    // return a map of updated values to the profile screen
+    Navigator.pop<Map<String, dynamic>>(context, {
+      'name': nameCtrl.text.trim(),
+      'email': emailCtrl.text.trim(),
+      'birthday': birthdayCtrl.text.trim(),
+      'gender': genderCtrl.text.trim(),
+      'address': addressCtrl.text.trim(),
+      'contactNumber': contactCtrl.text.trim(),
+      'guardianContact': guardianCtrl.text.trim(),
+      'moveIn': moveInController.text.trim(),
+      'monthlyRent': rentController.text.trim(),
+      'roomNo': roomNoController.text.trim(),
+      'floorNo': floorController.text.trim(),
+      'avatarPath': _avatarPath,
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final avatar = _profileImage == null
+        ? (widget.avatarPath == null || widget.avatarPath!.isEmpty)
+              ? const Icon(Icons.camera_alt, size: 50, color: Colors.white)
+              : null
+        : null;
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () {
-            Navigator.pop(context);
-          },
+          onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
           "EDIT PROFILE",
@@ -97,7 +192,7 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
               children: [
                 const SizedBox(height: 20),
 
-                // Upload Photo Section (Circle)
+                // Upload Photo (Circle)
                 Center(
                   child: Column(
                     children: [
@@ -115,15 +210,15 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
                                     image: FileImage(_profileImage!),
                                     fit: BoxFit.cover,
                                   )
+                                : (widget.avatarPath != null &&
+                                      widget.avatarPath!.isNotEmpty)
+                                ? DecorationImage(
+                                    image: FileImage(File(widget.avatarPath!)),
+                                    fit: BoxFit.cover,
+                                  )
                                 : null,
                           ),
-                          child: _profileImage == null
-                              ? const Icon(
-                                  Icons.camera_alt,
-                                  size: 50,
-                                  color: Colors.white,
-                                )
-                              : null,
+                          child: avatar,
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -137,39 +232,54 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
 
                 const SizedBox(height: 30),
 
-                // Name
-                _buildTextField(Icons.person, "Name"),
+                _buildTextField(Icons.person, "Name", controller: nameCtrl),
                 const SizedBox(height: 15),
 
-                // Birthday & Gender Row
                 Row(
                   children: [
                     Expanded(
-                      child: _buildTextField(Icons.calendar_today, "Birthday"),
+                      child: _buildTextField(
+                        Icons.calendar_today,
+                        "Birthday",
+                        controller: birthdayCtrl,
+                      ),
                     ),
                     const SizedBox(width: 10),
-                    Expanded(child: _buildTextField(Icons.male, "Gender")),
+                    Expanded(
+                      child: _buildTextField(
+                        Icons.male,
+                        "Gender",
+                        controller: genderCtrl,
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 15),
 
-                // Address
-                _buildTextField(Icons.location_on, "Address"),
+                _buildTextField(
+                  Icons.location_on,
+                  "Address",
+                  controller: addressCtrl,
+                ),
                 const SizedBox(height: 15),
 
-                // Email
-                _buildTextField(Icons.email, "Email"),
+                _buildTextField(Icons.email, "Email", controller: emailCtrl),
                 const SizedBox(height: 15),
 
-                // Contact Number
-                _buildTextField(Icons.phone, "Contact Number"),
+                _buildTextField(
+                  Icons.phone,
+                  "Contact Number",
+                  controller: contactCtrl,
+                ),
                 const SizedBox(height: 15),
 
-                // Guardian’s Contact
-                _buildTextField(Icons.phone, "Guardian’s Contact No."),
+                _buildTextField(
+                  Icons.phone,
+                  "Guardian’s Contact No.",
+                  controller: guardianCtrl,
+                ),
                 const SizedBox(height: 15),
 
-                // Move-in & Monthly Rent (Clickable but not directly editable)
                 Row(
                   children: [
                     Expanded(
@@ -183,63 +293,31 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Monthly rent is fixed."),
-                            ),
-                          );
-                        },
-                        child: _buildDisabledField(
-                          Icons.attach_money,
-                          rentController,
-                        ),
+                      child: _buildDisabledField(
+                        Icons.attach_money,
+                        rentController,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 15),
 
-                // Room No. & Room Floor (Clickable info only)
                 Row(
                   children: [
                     Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Room number is fixed."),
-                            ),
-                          );
-                        },
-                        child: _buildDisabledField(
-                          Icons.meeting_room,
-                          roomNoController,
-                        ),
+                      child: _buildDisabledField(
+                        Icons.meeting_room,
+                        roomNoController,
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Room floor is fixed."),
-                            ),
-                          );
-                        },
-                        child: _buildDisabledField(
-                          Icons.layers,
-                          floorController,
-                        ),
-                      ),
+                      child: _buildDisabledField(Icons.layers, floorController),
                     ),
                   ],
                 ),
                 const SizedBox(height: 30),
 
-                // Save Button
                 SizedBox(
                   width: double.infinity,
                   height: 55,
@@ -250,13 +328,7 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text("Profile saved successfully!"),
-                        ),
-                      );
-                    },
+                    onPressed: _saveAndClose,
                     child: const Text(
                       "SAVE",
                       style: TextStyle(
@@ -277,26 +349,26 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
   }
 
   // Editable Text Field
-  Widget _buildTextField(IconData icon, String hint) {
-    return GestureDetector(
-      onTap: () {
-        debugPrint("Clicked on $hint field");
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.85),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: TextField(
-          decoration: InputDecoration(
-            prefixIcon: Icon(icon, color: Colors.black87),
-            hintText: hint,
-            hintStyle: const TextStyle(color: Colors.black54),
-            border: InputBorder.none,
-            contentPadding: const EdgeInsets.symmetric(
-              vertical: 18,
-              horizontal: 12,
-            ),
+  Widget _buildTextField(
+    IconData icon,
+    String hint, {
+    required TextEditingController controller,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(
+          prefixIcon: Icon(icon, color: Colors.black87),
+          hintText: hint,
+          hintStyle: const TextStyle(color: Colors.black54),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 18,
+            horizontal: 12,
           ),
         ),
       ),

@@ -33,17 +33,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
   String? _landlordPhone;
   bool _fetchingPhone = false;
 
-  // Helper: parse Supabase timestamp -> local (PH) time
-  DateTime _parseToLocal(dynamic createdAt) {
-    if (createdAt == null) return DateTime.now();
-    try {
-      // Supabase returns ISO8601 (UTC). Always convert to local.
-      final dt = DateTime.parse(createdAt.toString());
-      return dt.toLocal();
-    } catch (_) {
-      return DateTime.now();
-    }
-  }
+  Object? _editingMessageId; // <- works for UUID string or int
 
   @override
   void initState() {
@@ -76,31 +66,57 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
     }
   }
 
-  Future<void> _send() async {
+  String _fmtLocal(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    try {
+      return DateFormat('hh:mm a').format(DateTime.parse(iso).toLocal());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _sendOrUpdate() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     final me = _sb.auth.currentUser?.id;
     if (me == null) return;
 
     try {
-      await _chat.send(
-        conversationId: widget.conversationId,
-        senderId: me,
-        body: text,
-        viaSms: false, // in-app send
-      );
-      _controller.clear();
-      // Give realtime a moment, then jump to bottom
-      await Future.delayed(const Duration(milliseconds: 120));
-      if (_listController.hasClients) {
-        _listController.jumpTo(_listController.position.maxScrollExtent);
+      if (_editingMessageId != null) {
+        await _chat.updateMessage(messageId: _editingMessageId!, newBody: text);
+        setState(() => _editingMessageId = null);
+        _controller.clear();
+      } else {
+        await _chat.send(
+          conversationId: widget.conversationId,
+          senderId: me,
+          body: text,
+          viaSms: false,
+        );
+        _controller.clear();
+        await Future.delayed(const Duration(milliseconds: 120));
+        if (_listController.hasClients) {
+          _listController.jumpTo(_listController.position.maxScrollExtent);
+        }
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Send failed: $e')));
+      ).showSnackBar(SnackBar(content: Text('Action failed: $e')));
     }
+  }
+
+  void _startEditing(Object messageId, String currentText) {
+    setState(() {
+      _editingMessageId = messageId;
+      _controller.text = currentText;
+    });
+  }
+
+  void _cancelEditing() {
+    setState(() => _editingMessageId = null);
+    _controller.clear();
   }
 
   Future<void> _openSmsWithDraft() async {
@@ -114,7 +130,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
 
     final draft = _controller.text.trim();
 
-    // Primary: sms: scheme (Android supports 'body' as query)
+    // Primary: sms: (Android supports 'body')
     final smsUri = Uri(
       scheme: 'sms',
       path: phone,
@@ -126,7 +142,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
       return;
     }
 
-    // Fallback: smsto: scheme (widely supported)
+    // Fallback: smsto:
     final smsto = Uri(scheme: 'smsto', path: phone);
     if (await canLaunchUrl(smsto)) {
       await launchUrl(smsto, mode: LaunchMode.externalApplication);
@@ -177,9 +193,22 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
             child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: _chat.streamMessages(widget.conversationId),
               builder: (context, snap) {
-                final data = snap.data ?? const [];
+                final data = List<Map<String, dynamic>>.from(
+                  snap.data ?? const [],
+                );
 
-                // keep scrolled to bottom whenever new data lands
+                // make sure newest is at the bottom
+                data.sort((a, b) {
+                  final aT =
+                      DateTime.tryParse(a['created_at'] ?? '') ??
+                      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+                  final bT =
+                      DateTime.tryParse(b['created_at'] ?? '') ??
+                      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+                  return aT.compareTo(bT);
+                });
+
+                // keep scrolled to bottom
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_listController.hasClients) {
                     _listController.jumpTo(
@@ -196,13 +225,9 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                     final m = data[i];
                     final isMe =
                         m['sender_user_id'] == me || m['sender_id'] == me;
-
-                    // >>> PH TIME FIX: always convert to local before formatting
-                    final time = _parseToLocal(m['created_at']);
-
+                    final time = _fmtLocal(m['created_at']);
                     final isDeleted = (m['is_deleted'] ?? false) == true;
-                    final editedAt = m['edited_at'] as String?;
-                    final wasEdited = editedAt != null;
+                    final wasEdited = (m['edited_at'] as String?) != null;
 
                     Widget bubble() {
                       if (isDeleted) {
@@ -231,7 +256,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                DateFormat('hh:mm a').format(time),
+                                time,
                                 style: TextStyle(
                                   color: isMe
                                       ? Colors.white70
@@ -283,56 +308,10 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                                   ],
                                 );
                                 if (action == 'edit') {
-                                  final ctrl = TextEditingController(
-                                    text: (m['body'] ?? '') as String,
+                                  _startEditing(
+                                    m['id'], // <- UUID or int; both ok
+                                    (m['body'] ?? '') as String,
                                   );
-                                  final newText = await showDialog<String>(
-                                    context: context,
-                                    builder: (_) {
-                                      return AlertDialog(
-                                        title: const Text('Edit message'),
-                                        content: TextField(
-                                          controller: ctrl,
-                                          autofocus: true,
-                                          maxLines: null,
-                                          decoration: const InputDecoration(
-                                            hintText: 'Update message',
-                                          ),
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.pop(context),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          ElevatedButton(
-                                            onPressed: () => Navigator.pop(
-                                              context,
-                                              ctrl.text.trim(),
-                                            ),
-                                            child: const Text('Save'),
-                                          ),
-                                        ],
-                                      );
-                                    },
-                                  );
-                                  if (newText != null && newText.isNotEmpty) {
-                                    try {
-                                      await _chat.updateMessage(
-                                        messageId: (m['id'] as num).toInt(),
-                                        newBody: newText,
-                                      );
-                                    } catch (e) {
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: Text('Edit failed: $e'),
-                                        ),
-                                      );
-                                    }
-                                  }
                                 } else if (action == 'delete') {
                                   final sure = await showDialog<bool>(
                                     context: context,
@@ -358,7 +337,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                                   if (sure == true) {
                                     try {
                                       await _chat.softDeleteMessage(
-                                        messageId: (m['id'] as num).toInt(),
+                                        messageId: m['id'],
                                       );
                                     } catch (e) {
                                       if (!mounted) return;
@@ -406,6 +385,49 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
               },
             ),
           ),
+
+          // ---------- Inline edit banner like your screenshot ----------
+          if (_editingMessageId != null)
+            Container(
+              color: const Color(0xFF4A2B20), // warm brown-ish banner
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Edit message',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  // cancel X
+                  InkWell(
+                    onTap: _cancelEditing,
+                    borderRadius: BorderRadius.circular(20),
+                    child: const CircleAvatar(
+                      radius: 16,
+                      backgroundColor: Colors.white24,
+                      child: Icon(Icons.close, color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // save ✓
+                  InkWell(
+                    onTap: _sendOrUpdate,
+                    borderRadius: BorderRadius.circular(20),
+                    child: const CircleAvatar(
+                      radius: 16,
+                      backgroundColor: Colors.white24,
+                      child: Icon(Icons.check, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ---------- Input row ----------
           SafeArea(
             child: Container(
               color: Colors.white,
@@ -423,7 +445,9 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                     child: TextField(
                       controller: _controller,
                       decoration: InputDecoration(
-                        hintText: 'Type a message…',
+                        hintText: _editingMessageId != null
+                            ? 'Update your message…'
+                            : 'Type a message…',
                         filled: true,
                         fillColor: Colors.grey.shade100,
                         contentPadding: const EdgeInsets.symmetric(
@@ -435,16 +459,19 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                           borderSide: BorderSide.none,
                         ),
                       ),
-                      onSubmitted: (_) => _send(),
+                      onSubmitted: (_) => _sendOrUpdate(),
                     ),
                   ),
                   const SizedBox(width: 8),
                   CircleAvatar(
                     backgroundColor: const Color(0xFF04395E),
                     child: IconButton(
-                      icon: const Icon(Icons.send, color: Colors.white),
-                      onPressed: _send,
-                      tooltip: 'Send',
+                      icon: Icon(
+                        _editingMessageId != null ? Icons.check : Icons.send,
+                        color: Colors.white,
+                      ),
+                      onPressed: _sendOrUpdate,
+                      tooltip: _editingMessageId != null ? 'Save' : 'Send',
                     ),
                   ),
                 ],

@@ -2,11 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:smart_finder/TENANT/CHAT.dart';
 
-// 👇 tenant in-app chat screen (new class name)
-import 'package:smart_finder/TENANT/CHAT.dart' show ChatScreenTenant;
-
-// Tenant nav pages
 import 'package:smart_finder/TENANT/TAPARTMENT.dart';
 import 'package:smart_finder/TENANT/TPROFILE.dart';
 import 'package:smart_finder/TENANT/TSETTINGS.dart';
@@ -23,35 +20,86 @@ class TenantListChat extends StatefulWidget {
 class _TenantListChatState extends State<TenantListChat> {
   final _sb = Supabase.instance.client;
 
-  final List<Map<String, dynamic>> chats = [
-    {
-      'name': 'Mr. Landlord',
-      'message': 'Room is still available.',
-      'time': DateTime.now().subtract(const Duration(minutes: 3)),
-      'unreadCount': 1,
-      'isOnline': true,
-      'image': 'assets/images/landlord.png',
-    },
-    {
-      'name': 'Agent Paula',
-      'message': 'When can you visit?',
-      'time': DateTime.now().subtract(const Duration(hours: 2)),
-      'unreadCount': 0,
-      'isOnline': false,
-      'image': 'assets/images/agent.png',
-    },
-    {
-      'name': 'Owner Mike',
-      'message': 'Thanks for your interest.',
-      'time': DateTime.now().subtract(const Duration(days: 1)),
-      'unreadCount': 0,
-      'isOnline': true,
-      'image': 'assets/images/owner.png',
-    },
-  ];
-
   String searchQuery = '';
-  int _selectedIndex = 1; // Message tab default for tenant bottom nav
+  int _selectedIndex = 1;
+
+  bool _loading = true;
+  List<Map<String, dynamic>> _rows = [];
+
+  RealtimeChannel? _channel;
+  bool _navigating = false; // <— tap guard
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _subscribe();
+  }
+
+  @override
+  void dispose() {
+    if (_channel != null) _sb.removeChannel(_channel!);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final me = _sb.auth.currentUser?.id;
+    if (me == null) {
+      setState(() {
+        _rows = [];
+        _loading = false;
+      });
+      return;
+    }
+
+    // mirror of landlord_inbox; rename if yours differs
+    final data = await _sb
+        .from('tenant_inbox')
+        .select(
+          'conversation_id, tenant_id, landlord_id, last_message, last_time, unread_for_tenant',
+        )
+        .eq('tenant_id', me)
+        .order('last_time', ascending: false);
+
+    setState(() {
+      _rows = List<Map<String, dynamic>>.from(data);
+      _loading = false;
+    });
+  }
+
+  void _subscribe() {
+    final ch = _sb.channel('inbox-tenant');
+
+    ch.onPostgresChanges(
+      event: PostgresChangeEvent.insert,
+      schema: 'public',
+      table: 'messages',
+      callback: (_) => _load(),
+    );
+    ch.onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'messages',
+      callback: (_) => _load(),
+    );
+
+    ch.subscribe();
+    _channel = ch;
+  }
+
+  String _formatWhen(DateTime? utc) {
+    if (utc == null) return '';
+    final t = utc.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(t.year, t.month, t.day);
+
+    if (date == today) return DateFormat('hh:mm a').format(t);
+    if (date == today.subtract(const Duration(days: 1))) return 'Yesterday';
+    if (now.difference(t).inDays < 7) return DateFormat('EEE').format(t);
+    return DateFormat('MMM d').format(t);
+  }
 
   void _onNavTap(int index) {
     if (_selectedIndex == index) return;
@@ -88,68 +136,13 @@ class _TenantListChatState extends State<TenantListChat> {
     }
   }
 
-  Future<void> _openChatForTenant({
-    required String fallbackPeerName,
-    required String fallbackPeerImage,
-  }) async {
-    final me = _sb.auth.currentUser?.id;
-    if (me == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Please log in first.')));
-      return;
-    }
-
-    try {
-      // Get the most recent conversation for this tenant
-      final conv = await _sb
-          .from('conversations')
-          .select('id, landlord_id')
-          .eq('tenant_id', me)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
-
-      if (conv == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'No conversations yet. Tap a room’s “Message Landlord” to start one.',
-            ),
-          ),
-        );
-        return;
-      }
-
-      final conversationId = conv['id'] as String;
-
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ChatScreenTenant(
-            conversationId: conversationId,
-            peerName: fallbackPeerName, // display name in the app bar
-            peerImageAsset: fallbackPeerImage, // avatar asset
-          ),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Could not open chat: $e')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final filteredChats = chats.where((chat) {
+    final filtered = _rows.where((row) {
       final s = searchQuery.toLowerCase();
-      return chat['name'].toLowerCase().contains(s) ||
-          chat['message'].toLowerCase().contains(s);
+      final msg = (row['last_message'] ?? '').toString().toLowerCase();
+      final cid = (row['conversation_id'] ?? '').toString().toLowerCase();
+      return msg.contains(s) || cid.contains(s);
     }).toList();
 
     return Scaffold(
@@ -188,101 +181,105 @@ class _TenantListChatState extends State<TenantListChat> {
             ),
           ),
           const SizedBox(height: 20),
-          Expanded(
-            child: ListView.separated(
-              itemCount: filteredChats.length,
-              separatorBuilder: (_, __) =>
-                  const Divider(height: 1, indent: 72, color: Colors.black),
-              itemBuilder: (context, index) {
-                final chat = filteredChats[index];
-                final isUnread = chat['unreadCount'] > 0;
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.all(20),
+              child: CircularProgressIndicator(),
+            ),
+          if (!_loading)
+            Expanded(
+              child: ListView.separated(
+                itemCount: filtered.length,
+                separatorBuilder: (_, __) =>
+                    const Divider(height: 1, indent: 72, color: Colors.black),
+                itemBuilder: (context, index) {
+                  final row = filtered[index];
+                  final last = (row['last_message'] ?? '').toString();
+                  DateTime? t;
+                  if (row['last_time'] != null) {
+                    try {
+                      t = DateTime.parse(row['last_time'].toString());
+                    } catch (_) {}
+                  }
+                  final unread =
+                      int.tryParse('${row['unread_for_tenant'] ?? 0}') ?? 0;
 
-                return ListTile(
-                  tileColor: const Color(0xFFD9D9D9),
-                  leading: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      CircleAvatar(
-                        radius: 24,
-                        backgroundColor: Colors.grey.shade300,
-                        child: ClipOval(
-                          child: Image.asset(
-                            chat['image'],
-                            fit: BoxFit.cover,
-                            width: 48,
-                            height: 48,
-                          ),
-                        ),
-                      ),
-                      if (chat['isOnline'])
-                        Positioned(
-                          top: -2,
-                          right: -2,
-                          child: Container(
-                            width: 14,
-                            height: 14,
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  title: Text(
-                    chat['name'],
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(
-                    chat['message'],
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: isUnread ? Colors.black : Colors.grey[600],
-                      fontWeight: isUnread
-                          ? FontWeight.w600
-                          : FontWeight.normal,
+                  return ListTile(
+                    tileColor: const Color(0xFFD9D9D9),
+                    leading: const CircleAvatar(
+                      radius: 24,
+                      backgroundImage: AssetImage('assets/images/landlord.png'),
                     ),
-                  ),
-                  trailing: SizedBox(
-                    height: 48,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          DateFormat('hh:mm a').format(chat['time']),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                        if (isUnread)
-                          Container(
+                    title: Text(
+                      'Landlord • ${_formatWhen(t)}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      last,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: unread > 0 ? Colors.black : Colors.grey[600],
+                        fontWeight: unread > 0
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    trailing: (unread > 0)
+                        ? Container(
                             padding: const EdgeInsets.all(6),
                             decoration: const BoxDecoration(
                               color: Colors.redAccent,
                               shape: BoxShape.circle,
                             ),
                             child: Text(
-                              '${chat['unreadCount']}',
+                              '$unread',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
                               ),
                             ),
+                          )
+                        : null,
+                    onTap: () async {
+                      if (_navigating) return;
+                      _navigating = true;
+                      try {
+                        final cid = (row['conversation_id'] ?? '').toString();
+                        if (cid.isEmpty) {
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Missing conversation id'),
+                            ),
+                          );
+                          return;
+                        }
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatScreenTenant(
+                              conversationId: cid,
+                              peerName: 'Landlord',
+                              peerImageAsset: 'assets/images/landlord.png',
+                              landlordPhone:
+                                  null, // fetched in chat if not provided
+                            ),
                           ),
-                      ],
-                    ),
-                  ),
-                  onTap: () => _openChatForTenant(
-                    fallbackPeerName: chat['name'],
-                    fallbackPeerImage: chat['image'],
-                  ),
-                );
-              },
+                        );
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Open chat failed: $e')),
+                        );
+                      } finally {
+                        _navigating = false;
+                      }
+                    },
+                  );
+                },
+              ),
             ),
-          ),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(

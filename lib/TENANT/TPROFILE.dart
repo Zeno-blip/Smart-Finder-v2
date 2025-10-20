@@ -1,10 +1,12 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:smart_finder/TENANT/TCHAT2.dart';
 
 import 'TAPARTMENT.dart';
 import 'TSETTINGS.dart';
 import 'TLOGIN.dart';
-import 'TMYROOM.dart'; // Added for My Room navigation
+import 'TMYROOM.dart';
+import 'TPROFILEEDIT.dart';
 
 class TenantProfile extends StatefulWidget {
   const TenantProfile({super.key});
@@ -16,8 +18,85 @@ class TenantProfile extends StatefulWidget {
 class _TenantProfileState extends State<TenantProfile> {
   int _selectedNavIndex = 2; // Default to Profile tab
 
+  // ------- Local profile state (initial sample values) -------
+  String? _avatarPath; // file path from editor (if user picked)
+  String _name = 'Mykel Josh Nombrads';
+  String _email = '@mykeljoshnombrads.gmail.com';
+  String _birthday = 'May 11, 2003';
+  String _gender = 'Male';
+  String _address = 'Davao City, Brgy Maa, Grava...';
+  String _phone = '09612783021';
+  String _guardianPhone = '09612783021';
+
+  // Non-editable (still shown)
+  String _moveIn = '2025-08-17';
+  String _monthlyRent = '₱3,750';
+  String _roomNo = 'L204';
+  String _floorNo = '3RD Floor';
+
+  Future<void> _openEdit() async {
+    // Push the editor with current values; wait for result
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TenantEditProfile(
+          name: _name,
+          email: _email,
+          birthday: _birthday,
+          gender: _gender,
+          address: _address,
+          contactNumber: _phone,
+          guardianContact: _guardianPhone,
+          moveIn: _moveIn,
+          monthlyRent: _monthlyRent,
+          roomNo: _roomNo,
+          floorNo: _floorNo,
+          avatarPath: _avatarPath,
+        ),
+      ),
+    );
+
+    if (!mounted || result == null) return;
+
+    // Update local state with any returned values
+    setState(() {
+      _name = result['name'] ?? _name;
+      _email = result['email'] ?? _email;
+      _birthday = result['birthday'] ?? _birthday;
+      _gender = result['gender'] ?? _gender;
+      _address = result['address'] ?? _address;
+      _phone = result['contactNumber'] ?? _phone;
+      _guardianPhone = result['guardianContact'] ?? _guardianPhone;
+
+      _moveIn = result['moveIn'] ?? _moveIn;
+      _monthlyRent = result['monthlyRent'] ?? _monthlyRent;
+      _roomNo = result['roomNo'] ?? _roomNo;
+      _floorNo = result['floorNo'] ?? _floorNo;
+
+      _avatarPath = result['avatarPath'] ?? _avatarPath;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final avatar = _avatarPath != null && _avatarPath!.isNotEmpty
+        ? ClipOval(
+            child: Image.file(
+              File(_avatarPath!),
+              fit: BoxFit.cover,
+              width: 95,
+              height: 95,
+            ),
+          )
+        : ClipOval(
+            child: Image.asset(
+              'assets/images/josil.png',
+              fit: BoxFit.cover,
+              width: 95,
+              height: 95,
+            ),
+          );
+
     return Scaffold(
       backgroundColor: const Color(0xFF002D4C),
       appBar: AppBar(
@@ -53,22 +132,14 @@ class _TenantProfileState extends State<TenantProfile> {
                         CircleAvatar(
                           radius: 50,
                           backgroundColor: Colors.white,
-                          child: ClipOval(
-                            child: Image.asset(
-                              'assets/images/josil.png',
-                              fit: BoxFit.cover,
-                              width: 95,
-                              height: 95,
-                            ),
-                          ),
+                          child: avatar,
                         ),
                         Positioned(
                           bottom: 0,
                           right: 0,
                           child: InkWell(
-                            onTap: () {
-                              print('Upload button tapped!');
-                            },
+                            onTap:
+                                _openEdit, // go straight to edit to change photo
                             child: Container(
                               decoration: BoxDecoration(
                                 color: Colors.blueAccent,
@@ -93,17 +164,17 @@ class _TenantProfileState extends State<TenantProfile> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Mykel Josh Nombrads',
-                          style: TextStyle(
+                        Text(
+                          _name,
+                          style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const Text(
-                          '@mykeljoshnombrads.gmail.com',
-                          style: TextStyle(color: Colors.white70),
+                        Text(
+                          _email,
+                          style: const TextStyle(color: Colors.white70),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -112,7 +183,7 @@ class _TenantProfileState extends State<TenantProfile> {
                               width: 220,
                               height: 40,
                               child: ElevatedButton(
-                                onPressed: () {},
+                                onPressed: _openEdit,
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF5A7689),
                                   shape: RoundedRectangleBorder(
@@ -139,26 +210,26 @@ class _TenantProfileState extends State<TenantProfile> {
               const SizedBox(height: 50),
               Row(
                 children: [
-                  Expanded(child: buildInfoField('Birthday', 'May 11, 2003')),
+                  Expanded(child: buildInfoField('Birthday', _birthday)),
                   const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Gender', 'Male')),
+                  Expanded(child: buildInfoField('Gender', _gender)),
                 ],
               ),
-              buildInfoField('Address', 'Davao City, Brgy Maa, Grava...'),
-              buildInfoField('Phone Number', '09612783021'),
-              buildInfoField('Parent Contacts', '09612783021'),
+              buildInfoField('Address', _address),
+              buildInfoField('Phone Number', _phone),
+              buildInfoField('Parent Contacts', _guardianPhone),
               Row(
                 children: [
-                  Expanded(child: buildInfoField('Move-In', '2025-08-17')),
+                  Expanded(child: buildInfoField('Move-In', _moveIn)),
                   const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Monthly Rent', '₱3,750')),
+                  Expanded(child: buildInfoField('Monthly Rent', _monthlyRent)),
                 ],
               ),
               Row(
                 children: [
-                  Expanded(child: buildInfoField('Room No.', 'L204')),
+                  Expanded(child: buildInfoField('Room No.', _roomNo)),
                   const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Floor No.', '3RD Floor')),
+                  Expanded(child: buildInfoField('Floor No.', _floorNo)),
                 ],
               ),
               const SizedBox(height: 30),
@@ -167,7 +238,7 @@ class _TenantProfileState extends State<TenantProfile> {
         ),
       ),
 
-      // ✅ Updated Bottom Navigation Bar (from first code)
+      // Bottom Navigation Bar
       bottomNavigationBar: BottomNavigationBar(
         backgroundColor: Colors.white,
         selectedItemColor: Colors.black,

@@ -21,8 +21,11 @@ class LandlordChatScreen extends StatefulWidget {
 
 class _LandlordChatScreenState extends State<LandlordChatScreen> {
   final _controller = TextEditingController();
+  final _listController = ScrollController();
   late final SupabaseClient _sb;
   late final ChatService _chat;
+
+  int? _editingMessageId; // ID of message being edited
 
   @override
   void initState() {
@@ -32,24 +35,59 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
     _chat.markRead(conversationId: widget.conversationId, isLandlord: true);
   }
 
-  Future<void> _send() async {
+  String _fmtLocal(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      return DateFormat('hh:mm a').format(dt);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _sendOrUpdate() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     final me = _sb.auth.currentUser?.id;
     if (me == null) return;
+
     try {
-      await _chat.send(
-        conversationId: widget.conversationId,
-        senderId: me,
-        body: text,
-      );
-      _controller.clear();
+      if (_editingMessageId != null) {
+        // update existing
+        await _chat.updateMessage(messageId: _editingMessageId!, newBody: text);
+        setState(() => _editingMessageId = null);
+        _controller.clear();
+      } else {
+        // send new
+        await _chat.send(
+          conversationId: widget.conversationId,
+          senderId: me,
+          body: text,
+        );
+        _controller.clear();
+        await Future.delayed(const Duration(milliseconds: 120));
+        if (_listController.hasClients) {
+          _listController.jumpTo(_listController.position.maxScrollExtent);
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Send failed: $e')));
+      ).showSnackBar(SnackBar(content: Text('Action failed: $e')));
     }
+  }
+
+  void _startEditing(int messageId, String currentText) {
+    setState(() {
+      _editingMessageId = messageId;
+      _controller.text = currentText;
+    });
+  }
+
+  void _cancelEditing() {
+    setState(() => _editingMessageId = null);
+    _controller.clear();
   }
 
   @override
@@ -78,19 +116,37 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
             child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: _chat.streamMessages(widget.conversationId),
               builder: (context, snap) {
-                final data = snap.data ?? const [];
+                final data = List<Map<String, dynamic>>.from(
+                  snap.data ?? const [],
+                );
+                data.sort((a, b) {
+                  final aT =
+                      DateTime.tryParse(a['created_at'] ?? '') ??
+                      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+                  final bT =
+                      DateTime.tryParse(b['created_at'] ?? '') ??
+                      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+                  return aT.compareTo(bT);
+                });
+
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (_listController.hasClients) {
+                    _listController.jumpTo(
+                      _listController.position.maxScrollExtent,
+                    );
+                  }
+                });
+
                 return ListView.builder(
+                  controller: _listController,
                   padding: const EdgeInsets.all(10),
                   itemCount: data.length,
                   itemBuilder: (context, index) {
                     final m = data[index];
                     final isMe = m['sender_user_id'] == me;
-                    final time =
-                        DateTime.tryParse(m['created_at'] ?? '') ??
-                        DateTime.now();
+                    final time = _fmtLocal(m['created_at']);
                     final isDeleted = (m['is_deleted'] ?? false) == true;
-                    final editedAt = m['edited_at'] as String?;
-                    final wasEdited = editedAt != null;
+                    final wasEdited = (m['edited_at'] as String?) != null;
 
                     Widget bubbleContent() {
                       if (isDeleted) {
@@ -119,7 +175,7 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                DateFormat('hh:mm a').format(time),
+                                time,
                                 style: TextStyle(
                                   color: isMe
                                       ? Colors.white70
@@ -133,8 +189,8 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                                   '(edited)',
                                   style: TextStyle(
                                     color: isMe ? Colors.white70 : Colors.grey,
-                                    fontSize: 11,
                                     fontStyle: FontStyle.italic,
+                                    fontSize: 11,
                                   ),
                                 ),
                               ],
@@ -153,7 +209,7 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                             ? () async {
                                 final action = await showMenu<String>(
                                   context: context,
-                                  position: RelativeRect.fromLTRB(
+                                  position: const RelativeRect.fromLTRB(
                                     200,
                                     300,
                                     20,
@@ -162,7 +218,7 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                                   items: const [
                                     PopupMenuItem(
                                       value: 'edit',
-                                      child: Text('Edit'),
+                                      child: Text('Edit inline'),
                                     ),
                                     PopupMenuItem(
                                       value: 'delete',
@@ -170,55 +226,12 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                                     ),
                                   ],
                                 );
+
                                 if (action == 'edit') {
-                                  final ctrl = TextEditingController(
-                                    text: (m['body'] ?? '') as String,
+                                  _startEditing(
+                                    (m['id'] as num).toInt(),
+                                    (m['body'] ?? '') as String,
                                   );
-                                  final newText = await showDialog<String>(
-                                    context: context,
-                                    builder: (_) => AlertDialog(
-                                      title: const Text('Edit message'),
-                                      content: TextField(
-                                        controller: ctrl,
-                                        autofocus: true,
-                                        maxLines: null,
-                                        decoration: const InputDecoration(
-                                          hintText: 'Update message',
-                                        ),
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.pop(context),
-                                          child: const Text('Cancel'),
-                                        ),
-                                        ElevatedButton(
-                                          onPressed: () => Navigator.pop(
-                                            context,
-                                            ctrl.text.trim(),
-                                          ),
-                                          child: const Text('Save'),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                  if (newText != null && newText.isNotEmpty) {
-                                    try {
-                                      await _chat.updateMessage(
-                                        messageId: (m['id'] as num).toInt(),
-                                        newBody: newText,
-                                      );
-                                    } catch (e) {
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: Text('Edit failed: $e'),
-                                        ),
-                                      );
-                                    }
-                                  }
                                 } else if (action == 'delete') {
                                   final sure = await showDialog<bool>(
                                     context: context,
@@ -294,15 +307,17 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
           ),
           SafeArea(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               color: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _controller,
                       decoration: InputDecoration(
-                        hintText: 'Type a message...',
+                        hintText: _editingMessageId != null
+                            ? 'Editing message...'
+                            : 'Type a message...',
                         filled: true,
                         fillColor: Colors.grey.shade100,
                         contentPadding: const EdgeInsets.symmetric(
@@ -314,16 +329,37 @@ class _LandlordChatScreenState extends State<LandlordChatScreen> {
                           borderSide: BorderSide.none,
                         ),
                       ),
+                      onSubmitted: (_) => _sendOrUpdate(),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  CircleAvatar(
-                    backgroundColor: const Color(0xFF04395E),
-                    child: IconButton(
-                      icon: const Icon(Icons.send, color: Colors.white),
-                      onPressed: _send,
+                  if (_editingMessageId != null)
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.red),
+                          onPressed: _cancelEditing,
+                          tooltip: 'Cancel edit',
+                        ),
+                        CircleAvatar(
+                          backgroundColor: const Color(0xFF04395E),
+                          child: IconButton(
+                            icon: const Icon(Icons.check, color: Colors.white),
+                            onPressed: _sendOrUpdate,
+                            tooltip: 'Save edit',
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    CircleAvatar(
+                      backgroundColor: const Color(0xFF04395E),
+                      child: IconButton(
+                        icon: const Icon(Icons.send, color: Colors.white),
+                        onPressed: _sendOrUpdate,
+                        tooltip: 'Send message',
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),

@@ -30,6 +30,7 @@ class _ListChatState extends State<ListChat> {
   bool _loading = true;
 
   RealtimeChannel? _channel;
+  bool _navigating = false; // <— tap guard
 
   @override
   void initState() {
@@ -78,18 +79,31 @@ class _ListChatState extends State<ListChat> {
       event: PostgresChangeEvent.insert,
       schema: 'public',
       table: 'messages',
-      callback: (payload) => _load(),
+      callback: (_) => _load(),
     );
 
     ch.onPostgresChanges(
       event: PostgresChangeEvent.update,
       schema: 'public',
       table: 'messages',
-      callback: (payload) => _load(),
+      callback: (_) => _load(),
     );
 
     ch.subscribe();
     _channel = ch;
+  }
+
+  String _formatWhen(DateTime? utc) {
+    if (utc == null) return '';
+    final t = utc.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(t.year, t.month, t.day);
+
+    if (date == today) return DateFormat('hh:mm a').format(t);
+    if (date == today.subtract(const Duration(days: 1))) return 'Yesterday';
+    if (now.difference(t).inDays < 7) return DateFormat('EEE').format(t);
+    return DateFormat('MMM d').format(t);
   }
 
   void _onNavTap(int index) {
@@ -196,9 +210,12 @@ class _ListChatState extends State<ListChat> {
                 itemBuilder: (context, index) {
                   final row = filtered[index];
                   final last = (row['last_message'] ?? '').toString();
-                  final t = row['last_time'] != null
-                      ? DateTime.tryParse(row['last_time'].toString())
-                      : null;
+                  DateTime? t;
+                  if (row['last_time'] != null) {
+                    try {
+                      t = DateTime.parse(row['last_time'].toString());
+                    } catch (_) {}
+                  }
                   final unread =
                       int.tryParse('${row['unread_for_landlord'] ?? 0}') ?? 0;
 
@@ -208,9 +225,9 @@ class _ListChatState extends State<ListChat> {
                       radius: 24,
                       backgroundImage: AssetImage('assets/images/mykel.png'),
                     ),
-                    title: const Text(
-                      'Conversation',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                    title: Text(
+                      'Conversation • ${_formatWhen(t)}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     subtitle: Text(
                       last,
@@ -223,48 +240,54 @@ class _ListChatState extends State<ListChat> {
                             : FontWeight.normal,
                       ),
                     ),
-                    trailing: SizedBox(
-                      height: 48,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            t != null ? DateFormat('hh:mm a').format(t) : '',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
+                    trailing: (unread > 0)
+                        ? Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: const BoxDecoration(
+                              color: Colors.redAccent,
+                              shape: BoxShape.circle,
                             ),
-                          ),
-                          if (unread > 0)
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: const BoxDecoration(
-                                color: Colors.redAccent,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Text(
-                                '$unread',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
+                            child: Text(
+                              '$unread',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
                               ),
                             ),
-                        ],
-                      ),
-                    ),
-                    onTap: () {
-                      // Navigate with the *required* parameters for LandlordChatScreen
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => LandlordChatScreen(
-                            conversationId: row['conversation_id'].toString(),
-                            peerName: 'Tenant', // optionally fetch tenant name
-                            peerImageAsset: 'assets/images/mykel.png',
+                          )
+                        : null,
+                    onTap: () async {
+                      if (_navigating) return;
+                      _navigating = true;
+                      try {
+                        final cid = (row['conversation_id'] ?? '').toString();
+                        if (cid.isEmpty) {
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Missing conversation id'),
+                            ),
+                          );
+                          return;
+                        }
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => LandlordChatScreen(
+                              conversationId: cid,
+                              peerName: 'Tenant',
+                              peerImageAsset: 'assets/images/mykel.png',
+                            ),
                           ),
-                        ),
-                      );
+                        );
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Open chat failed: $e')),
+                        );
+                      } finally {
+                        _navigating = false;
+                      }
                     },
                   );
                 },

@@ -25,7 +25,7 @@ class ChatService {
             created_at
           ''')
           .eq('conversation_id', conversationId)
-          .order('created_at');
+          .order('created_at'); // oldest -> newest; newest at bottom
       if (!controller.isClosed) {
         controller.add(List<Map<String, dynamic>>.from(rows));
       }
@@ -84,13 +84,13 @@ class ChatService {
       'body': body,
       'transport': transport,
       'status': status,
-      'recipient_phone': phone ?? '', // keep NOT NULL happy if present
-      // created_at will be set by DB default (UTC). No need to set here.
+      'recipient_phone': phone ?? '',
     });
   }
 
+  /// Accepts either UUID String or int PK
   Future<void> updateMessage({
-    required int messageId,
+    required Object messageId,
     required String newBody,
   }) async {
     await sb
@@ -102,7 +102,8 @@ class ChatService {
         .eq('id', messageId);
   }
 
-  Future<void> softDeleteMessage({required int messageId}) async {
+  /// Accepts either UUID String or int PK
+  Future<void> softDeleteMessage({required Object messageId}) async {
     await sb
         .from('messages')
         .update({

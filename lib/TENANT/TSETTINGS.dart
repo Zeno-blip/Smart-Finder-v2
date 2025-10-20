@@ -41,6 +41,7 @@ class _TenantSettingsState extends State<TenantSettings> {
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
         child: ListView(
           children: [
+            // Profile Tile
             _buildTile(
               leading: const CircleAvatar(
                 backgroundImage: AssetImage('assets/images/josil.png'),
@@ -58,6 +59,8 @@ class _TenantSettingsState extends State<TenantSettings> {
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
+
+            // Edit Profile Tile
             _buildTile(
               leading: const Icon(Icons.person, color: Colors.black54),
               title: 'Account',
@@ -66,13 +69,27 @@ class _TenantSettingsState extends State<TenantSettings> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => const TenantEditProfile(),
+                    builder: (context) => TenantEditProfile(
+                      name: 'Mykel Josh Nombrads',
+                      email: '@mykeljoshnombrads.gmail.com',
+                      birthday: 'May 11, 2003',
+                      gender: 'Male',
+                      address: 'Davao City, Brgy Maa, Grava...',
+                      contactNumber: '09612783021',
+                      guardianContact: '09612783021',
+                      moveIn: '2025-08-17',
+                      monthlyRent: '₱3,750',
+                      roomNo: 'L204',
+                      floorNo: '3RD Floor',
+                    ),
                   ),
                 );
               },
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
+
+            // Notification Tile
             _buildTile(
               leading: const Icon(Icons.notifications, color: Colors.black54),
               title: 'Notification',
@@ -87,6 +104,8 @@ class _TenantSettingsState extends State<TenantSettings> {
               ),
             ),
             const SizedBox(height: 12),
+
+            // Security Tile
             _buildTile(
               leading: const Icon(Icons.security, color: Colors.black54),
               title: 'Security',
@@ -102,14 +121,18 @@ class _TenantSettingsState extends State<TenantSettings> {
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
+
+            // Contact Us Tile
             _buildTile(
               leading: const Icon(Icons.phone, color: Colors.black54),
               title: 'Contact Us',
-              subtitle: 'Contact us',
+              subtitle: 'Reach our team',
               onTap: () {},
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
+
+            // About / Terms Tile
             _buildTile(
               leading: const Icon(Icons.info, color: Colors.black54),
               title: 'About',
@@ -118,8 +141,7 @@ class _TenantSettingsState extends State<TenantSettings> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) =>
-                        const TermsAndCondition(), // ✅ Navigate to T&C
+                    builder: (context) => const TermsAndCondition(),
                   ),
                 );
               },
