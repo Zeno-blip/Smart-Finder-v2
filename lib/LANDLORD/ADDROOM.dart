@@ -6,7 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:panorama_viewer/panorama_viewer.dart'; // ✅ swapped in
+import 'package:panorama_viewer/panorama_viewer.dart'; // using your chosen pkg
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
@@ -29,8 +29,8 @@ class LocalImage {
 }
 
 class Hotspot {
-  final double dx; // radians (longitude)
-  final double dy; // radians (latitude)
+  final double dx; // radians (longitude, -pi..pi)
+  final double dy; // radians (latitude, -pi/2..pi/2)
   final int targetImageIndex;
   final String? label;
 
@@ -159,22 +159,22 @@ class _AddroomState extends State<Addroom> {
   double _round(double v, [int digits = 6]) =>
       double.parse(v.toStringAsFixed(digits));
 
-  // ---- small helper: label widget (so we don't touch existing functions)
+  // ---- small helper: label widget
   Widget _fieldLabel(String text) => Align(
-    alignment: Alignment.centerLeft,
-    child: Padding(
-      padding: const EdgeInsets.only(bottom: 6, left: 2),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          letterSpacing: .2,
+        alignment: Alignment.centerLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 6, left: 2),
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              letterSpacing: .2,
+            ),
+          ),
         ),
-      ),
-    ),
-  );
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -234,7 +234,7 @@ class _AddroomState extends State<Addroom> {
                         Icons.apartment,
                         "Apartment Name (auto-filled)",
                         controller: nameCtrl,
-                        readOnly: true, // set to false if you want it editable
+                        readOnly: true,
                       ),
 
                       // ---- Address (auto)
@@ -243,7 +243,7 @@ class _AddroomState extends State<Addroom> {
                         Icons.location_on,
                         "Landlord Address (auto-filled)",
                         controller: locationCtrl,
-                        readOnly: true, // set to false if you want it editable
+                        readOnly: true,
                       ),
 
                       // ---- Monthly rate
@@ -325,9 +325,7 @@ class _AddroomState extends State<Addroom> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                        onPressed: _saving
-                            ? null
-                            : () => Navigator.pop(context),
+                        onPressed: _saving ? null : () => Navigator.pop(context),
                         child: const Text(
                           "Cancel",
                           style: TextStyle(
@@ -470,9 +468,7 @@ class _AddroomState extends State<Addroom> {
 
   Future<void> _pickAndAddImage() async {
     try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery,
-      );
+      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
       if (picked != null) {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages.add(LocalImage(bytes)));
@@ -482,9 +478,7 @@ class _AddroomState extends State<Addroom> {
 
   Future<void> _replaceImage(int index) async {
     try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery,
-      );
+      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
       if (picked != null) {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages[index] = LocalImage(bytes));
@@ -539,9 +533,8 @@ class _AddroomState extends State<Addroom> {
 
       for (final h in entry.value) {
         if (h.targetImageIndex == removedIndex) continue;
-        final newTarget = h.targetImageIndex > removedIndex
-            ? h.targetImageIndex - 1
-            : h.targetImageIndex;
+        final newTarget =
+            h.targetImageIndex > removedIndex ? h.targetImageIndex - 1 : h.targetImageIndex;
         newList.add(h.copyWith(targetImageIndex: newTarget));
       }
       out[newKey] = newList;
@@ -674,7 +667,7 @@ class _AddroomState extends State<Addroom> {
       for (final r in imageRows) (r['sort_order'] as int): (r['id'] as String),
     };
 
-    // 3) Insert hotspots: radians -> normalized [0,1] for DB
+    // 3) Insert hotspots: store RADIAN values directly (dx, dy)
     for (final entry in hotspotsByImageIndex.entries) {
       final srcIdx = entry.key;
       final srcId = imageIdBySort[srcIdx];
@@ -684,21 +677,18 @@ class _AddroomState extends State<Addroom> {
         final tgtId = imageIdBySort[h.targetImageIndex];
         if (tgtId == null) continue;
 
-        // normalize
-        double lon = h.dx % (2 * math.pi);
-        if (lon <= -math.pi) lon += 2 * math.pi;
-        if (lon > math.pi) lon -= 2 * math.pi;
+        double lon = h.dx;
+        // wrap to [-pi, pi]
+        while (lon <= -math.pi) lon += 2 * math.pi;
+        while (lon > math.pi) lon -= 2 * math.pi;
         final double lat = _clamp(h.dy, -math.pi / 2, math.pi / 2);
-
-        final double dxDb = _clamp((lon + math.pi) / (2 * math.pi), 0.0, 1.0);
-        final double dyDb = _clamp((lat + math.pi / 2) / math.pi, 0.0, 1.0);
 
         await supabase.from('hotspots').insert({
           'room_id': roomId,
           'source_image_id': srcId,
           'target_image_id': tgtId,
-          'dx': _round(dxDb, 6),
-          'dy': _round(dyDb, 6),
+          'dx': _round(lon, 6), // radians
+          'dy': _round(lat, 6), // radians
           'label': h.label,
         });
       }
@@ -706,12 +696,11 @@ class _AddroomState extends State<Addroom> {
 
     // 4) Inclusions
     if (inclusions.isNotEmpty) {
-      final incList =
-          await supabase
-                  .from('inclusion_options')
-                  .select('id,name')
-                  .or(_orEq('name', inclusions))
-              as List;
+      final incList = await supabase
+              .from('inclusion_options')
+              .select('id,name')
+              .or(_orEq('name', inclusions))
+          as List;
       for (final o in incList) {
         await supabase.from('room_inclusions').insert({
           'room_id': roomId,
@@ -722,12 +711,11 @@ class _AddroomState extends State<Addroom> {
 
     // 5) Preferences
     if (preferences.isNotEmpty) {
-      final prefList =
-          await supabase
-                  .from('preference_options')
-                  .select('id,name')
-                  .or(_orEq('name', preferences))
-              as List;
+      final prefList = await supabase
+              .from('preference_options')
+              .select('id,name')
+              .or(_orEq('name', preferences))
+          as List;
       for (final o in prefList) {
         await supabase.from('room_preferences').insert({
           'room_id': roomId,
@@ -783,9 +771,8 @@ class _AddroomState extends State<Addroom> {
         controller: controller,
         readOnly: readOnly,
         keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        inputFormatters: isNumber
-            ? [FilteringTextInputFormatter.digitsOnly]
-            : [],
+        inputFormatters:
+            isNumber ? [FilteringTextInputFormatter.digitsOnly] : [],
         decoration: InputDecoration(
           icon: Icon(icon, color: Colors.black54),
           border: InputBorder.none,
@@ -875,6 +862,8 @@ class _AddroomState extends State<Addroom> {
   }
 }
 
+// ===================== Hotspot Editor =====================
+
 class HotspotEditor extends StatefulWidget {
   final List<LocalImage> images;
   final Map<int, List<Hotspot>> initialHotspotsByImageIndex;
@@ -915,9 +904,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
   Future<void> _ensureDecoded(int i) async {
     if (_imgSizes[i] != null) return;
     try {
-      final ui.Codec codec = await ui.instantiateImageCodec(
-        widget.images[i].bytes,
-      );
+      final ui.Codec codec =
+          await ui.instantiateImageCodec(widget.images[i].bytes);
       final ui.FrameInfo frame = await codec.getNextFrame();
       final ui.Image img = frame.image;
       _imgSizes[i] = Size(img.width.toDouble(), img.height.toDouble());
@@ -927,6 +915,25 @@ class _HotspotEditorState extends State<HotspotEditor> {
     } catch (_) {}
   }
 
+  /// New: “Create & link new panorama” during hotspot linking
+  Future<int?> _createAndAppendPanorama() async {
+    try {
+      final XFile? picked =
+          await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (picked == null) return null;
+      final bytes = await picked.readAsBytes();
+      final newIndex = widget.images.length;
+      setState(() {
+        widget.images.add(LocalImage(bytes));
+        _imgSizes.add(null);
+      });
+      _ensureDecoded(newIndex);
+      return newIndex;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<int?> _pickTargetImageIndex({int? currentTarget}) async {
     return showDialog<int>(
       context: context,
@@ -934,25 +941,43 @@ class _HotspotEditorState extends State<HotspotEditor> {
         title: const Text('Link hotspot to image'),
         content: SizedBox(
           width: 360,
-          height: 260,
-          child: ListView.builder(
-            itemCount: widget.images.length,
-            itemBuilder: (context, i) {
-              return ListTile(
-                leading: SizedBox(
-                  width: 48,
-                  height: 48,
-                  child: widget.images[i].widget(fit: BoxFit.cover),
+          height: 320,
+          child: Column(
+            children: [
+              Expanded(
+                child: ListView.builder(
+                  itemCount: widget.images.length,
+                  itemBuilder: (context, i) {
+                    return ListTile(
+                      leading: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: widget.images[i].widget(fit: BoxFit.cover),
+                      ),
+                      title: Text(
+                        'Image ${i + 1}${i == currentIndex ? " (current)" : ""}',
+                      ),
+                      subtitle: Text(
+                        i == currentTarget ? 'Current target' : 'Tap to select',
+                      ),
+                      onTap: () => Navigator.pop(context, i),
+                    );
+                  },
                 ),
-                title: Text(
-                  'Image ${i + 1}${i == currentIndex ? " (current)" : ""}',
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.add_a_photo),
+                  label: const Text('Create & link new panorama'),
+                  onPressed: () async {
+                    final idx = await _createAndAppendPanorama();
+                    if (idx != null) Navigator.pop(context, idx);
+                  },
                 ),
-                subtitle: Text(
-                  i == currentTarget ? 'Current target' : 'Tap to select',
-                ),
-                onTap: () => Navigator.pop(context, i),
-              );
-            },
+              ),
+            ],
           ),
         ),
         actions: [
@@ -1010,6 +1035,15 @@ class _HotspotEditorState extends State<HotspotEditor> {
       hotspotsByImageIndex[currentIndex] = List.from(list);
       selectedHotspotIdx = list.length - 1;
     });
+
+    // If we just created a new pano, jump there
+    if (target == widget.images.length - 1 && selectedHotspotIdx != null) {
+      setState(() {
+        currentIndex = target;
+        _ensureDecoded(currentIndex);
+        selectedHotspotIdx = null;
+      });
+    }
   }
 
   void _deleteHotspot(int idx) {
@@ -1021,7 +1055,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
         if (list.isEmpty) {
           selectedHotspotIdx = null;
         } else {
-          selectedHotspotIdx = (selectedHotspotIdx!.clamp(0, list.length - 1));
+          selectedHotspotIdx =
+              (selectedHotspotIdx!.clamp(0, list.length - 1));
         }
       }
     });
@@ -1063,10 +1098,10 @@ class _HotspotEditorState extends State<HotspotEditor> {
                   icon: const Icon(Icons.chevron_left),
                   onPressed: currentIndex > 0
                       ? () => setState(() {
-                          currentIndex--;
-                          _ensureDecoded(currentIndex);
-                          selectedHotspotIdx = null;
-                        })
+                            currentIndex--;
+                            _ensureDecoded(currentIndex);
+                            selectedHotspotIdx = null;
+                          })
                       : null,
                 ),
                 Expanded(
@@ -1089,29 +1124,30 @@ class _HotspotEditorState extends State<HotspotEditor> {
                   icon: const Icon(Icons.chevron_right),
                   onPressed: currentIndex < widget.images.length - 1
                       ? () => setState(() {
-                          currentIndex++;
-                          _ensureDecoded(currentIndex);
-                          selectedHotspotIdx = null;
-                        })
+                            currentIndex++;
+                            _ensureDecoded(currentIndex);
+                            selectedHotspotIdx = null;
+                          })
                       : null,
                 ),
               ],
             ),
           ),
 
-          // --- Panorama viewer (no hotspot overlay; viewer only)
+          // --- Panorama viewer
+          // Anti-stretch: lock to aspect ratio. If the file is 2:1, it displays correctly.
           LayoutBuilder(
             builder: (context, constraints) {
               final Size? natural = _imgSizes[currentIndex];
-              final double width = constraints.maxWidth - 16;
-              double height;
-              if (natural != null && natural.width > 0 && natural.height > 0) {
-                height = width * (natural.height / natural.width);
-              } else {
-                height = 260;
-                _ensureDecoded(currentIndex);
-              }
-              height = height.clamp(180.0, 520.0);
+              // fall back to 2:1 if we don’t know yet
+              final ratio = (natural != null && natural.width > 0)
+                  ? natural.width / natural.height
+                  : 2.0;
+              final aspectRatio = ratio <= 0 ? 2.0 : ratio;
+              // height clamp to keep UI sane
+              final width = constraints.maxWidth - 16;
+              var height = width / aspectRatio;
+              height = height.clamp(200.0, 520.0);
 
               return SizedBox(
                 height: height,
@@ -1125,9 +1161,10 @@ class _HotspotEditorState extends State<HotspotEditor> {
                         border: Border.all(color: Colors.black12),
                       ),
                       child: PanoramaViewer(
+                        // Do NOT force a BoxFit here; let the pano widget map it.
                         child: Image.memory(
                           widget.images[currentIndex].bytes,
-                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
                         ),
                       ),
                     ),
@@ -1197,6 +1234,18 @@ class _HotspotEditorState extends State<HotspotEditor> {
                                   hotspotsByImageIndex[currentIndex] =
                                       List.from(spots);
                                 });
+                              } else if (v == 'createAndLink') {
+                                final idx = await _createAndAppendPanorama();
+                                if (idx != null) {
+                                  setState(() {
+                                    spots[i] = h.copyWith(targetImageIndex: idx);
+                                    hotspotsByImageIndex[currentIndex] =
+                                        List.from(spots);
+                                    currentIndex = idx;
+                                    _ensureDecoded(currentIndex);
+                                    selectedHotspotIdx = null;
+                                  });
+                                }
                               } else if (v == 'delete') {
                                 _deleteHotspot(i);
                               }
@@ -1209,6 +1258,10 @@ class _HotspotEditorState extends State<HotspotEditor> {
                               PopupMenuItem(
                                 value: 'editTarget',
                                 child: Text('Edit target'),
+                              ),
+                              PopupMenuItem(
+                                value: 'createAndLink',
+                                child: Text('Create & link new panorama'),
                               ),
                               PopupMenuItem(
                                 value: 'editLabel',
@@ -1254,9 +1307,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
                               spots[selectedHotspotIdx!] = selected.copyWith(
                                 dx: v,
                               );
-                              hotspotsByImageIndex[currentIndex] = List.from(
-                                spots,
-                              );
+                              hotspotsByImageIndex[currentIndex] =
+                                  List.from(spots);
                             });
                           },
                         ),
@@ -1278,9 +1330,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
                               spots[selectedHotspotIdx!] = selected.copyWith(
                                 dy: v,
                               );
-                              hotspotsByImageIndex[currentIndex] = List.from(
-                                spots,
-                              );
+                              hotspotsByImageIndex[currentIndex] =
+                                  List.from(spots);
                             });
                           },
                         ),

@@ -1,8 +1,9 @@
-import 'dart:io';
+// TENANT/TPROFILE.dart
 import 'package:flutter/material.dart';
-import 'package:smart_finder/TENANT/TCHAT2.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'TAPARTMENT.dart';
+import 'TCHAT2.dart';
 import 'TSETTINGS.dart';
 import 'TLOGIN.dart';
 import 'TMYROOM.dart';
@@ -16,86 +17,100 @@ class TenantProfile extends StatefulWidget {
 }
 
 class _TenantProfileState extends State<TenantProfile> {
-  int _selectedNavIndex = 2; // Default to Profile tab
+  final _sb = Supabase.instance.client;
+  int _selectedNavIndex = 2;
 
-  // ------- Local profile state (initial sample values) -------
-  String? _avatarPath; // file path from editor (if user picked)
-  String _name = 'Mykel Josh Nombrads';
-  String _email = '@mykeljoshnombrads.gmail.com';
-  String _birthday = 'May 11, 2003';
-  String _gender = 'Male';
-  String _address = 'Davao City, Brgy Maa, Grava...';
-  String _phone = '09612783021';
-  String _guardianPhone = '09612783021';
+  Map<String, dynamic>? _userRow; // from public.users
+  String? _avatarUrl; // storage public URL
+  bool _loading = true;
+  String? _error;
 
-  // Non-editable (still shown)
-  String _moveIn = '2025-08-17';
-  String _monthlyRent = '₱3,750';
-  String _roomNo = 'L204';
-  String _floorNo = '3RD Floor';
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final uid = _sb.auth.currentUser?.id;
+      if (uid == null) {
+        setState(() {
+          _loading = false;
+          _error = 'Not logged in.';
+        });
+        return;
+      }
+
+      // Pull from your public.users table (per your schema image)
+      final row = await _sb
+          .from('users')
+          .select('id, full_name, email, phone, address, first_name, last_name')
+          .eq('id', uid)
+          .maybeSingle();
+
+      // Build avatar URL from storage (avatars/<uid>.jpg or .png – jpg default)
+      final storage = _sb.storage.from('avatars');
+      // Try jpg then png
+      String? url;
+      final jpg = storage.getPublicUrl('$uid.jpg');
+      final png = storage.getPublicUrl('$uid.png');
+      // We can't probe existence without a request; pick jpg first
+      url = jpg;
+      // If you know your uploads are png, swap the order.
+
+      setState(() {
+        _userRow = row ?? {};
+        _avatarUrl = url;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = 'Failed to load profile: $e';
+        _loading = false;
+      });
+    }
+  }
 
   Future<void> _openEdit() async {
-    // Push the editor with current values; wait for result
-    final result = await Navigator.push<Map<String, dynamic>>(
+    if (_userRow == null) return;
+    final saved = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => TenantEditProfile(
-          name: _name,
-          email: _email,
-          birthday: _birthday,
-          gender: _gender,
-          address: _address,
-          contactNumber: _phone,
-          guardianContact: _guardianPhone,
-          moveIn: _moveIn,
-          monthlyRent: _monthlyRent,
-          roomNo: _roomNo,
-          floorNo: _floorNo,
-          avatarPath: _avatarPath,
+          // Pass current values (fallbacks to keep UI populated)
+          name:
+              (_userRow!['full_name'] ??
+                      '${_userRow!['first_name'] ?? ''} ${_userRow!['last_name'] ?? ''}')
+                  .toString()
+                  .trim(),
+          email: (_userRow!['email'] ?? '').toString(),
+          phone: (_userRow!['phone'] ?? '').toString(),
+          address: (_userRow!['address'] ?? '').toString(),
+          currentAvatarUrl: _avatarUrl,
         ),
       ),
     );
 
-    if (!mounted || result == null) return;
-
-    // Update local state with any returned values
-    setState(() {
-      _name = result['name'] ?? _name;
-      _email = result['email'] ?? _email;
-      _birthday = result['birthday'] ?? _birthday;
-      _gender = result['gender'] ?? _gender;
-      _address = result['address'] ?? _address;
-      _phone = result['contactNumber'] ?? _phone;
-      _guardianPhone = result['guardianContact'] ?? _guardianPhone;
-
-      _moveIn = result['moveIn'] ?? _moveIn;
-      _monthlyRent = result['monthlyRent'] ?? _monthlyRent;
-      _roomNo = result['roomNo'] ?? _roomNo;
-      _floorNo = result['floorNo'] ?? _floorNo;
-
-      _avatarPath = result['avatarPath'] ?? _avatarPath;
-    });
+    // If edit screen says something changed, reload
+    if (saved == true && mounted) {
+      _load();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final avatar = _avatarPath != null && _avatarPath!.isNotEmpty
-        ? ClipOval(
-            child: Image.file(
-              File(_avatarPath!),
-              fit: BoxFit.cover,
-              width: 95,
-              height: 95,
-            ),
-          )
-        : ClipOval(
-            child: Image.asset(
-              'assets/images/josil.png',
-              fit: BoxFit.cover,
-              width: 95,
-              height: 95,
-            ),
-          );
+    final row = _userRow ?? {};
+    final displayName =
+        (row['full_name'] ??
+                '${row['first_name'] ?? ''} ${row['last_name'] ?? ''}')
+            .toString()
+            .trim();
+    final email = (row['email'] ?? '').toString();
 
     return Scaffold(
       backgroundColor: const Color(0xFF002D4C),
@@ -115,130 +130,189 @@ class _TenantProfileState extends State<TenantProfile> {
           ),
         ),
         centerTitle: true,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              const SizedBox(height: 20),
-              Center(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Stack(
-                      children: [
-                        CircleAvatar(
-                          radius: 50,
-                          backgroundColor: Colors.white,
-                          child: avatar,
-                        ),
-                        Positioned(
-                          bottom: 0,
-                          right: 0,
-                          child: InkWell(
-                            onTap:
-                                _openEdit, // go straight to edit to change photo
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.blueAccent,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: Colors.white,
-                                  width: 2,
-                                ),
-                              ),
-                              padding: const EdgeInsets.all(5),
-                              child: const Icon(
-                                Icons.camera_alt,
-                                size: 18,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(width: 16),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _name,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          _email,
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            SizedBox(
-                              width: 220,
-                              height: 40,
-                              child: ElevatedButton(
-                                onPressed: _openEdit,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF5A7689),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                                child: const Text(
-                                  'Edit Profile',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 50),
-              Row(
-                children: [
-                  Expanded(child: buildInfoField('Birthday', _birthday)),
-                  const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Gender', _gender)),
-                ],
-              ),
-              buildInfoField('Address', _address),
-              buildInfoField('Phone Number', _phone),
-              buildInfoField('Parent Contacts', _guardianPhone),
-              Row(
-                children: [
-                  Expanded(child: buildInfoField('Move-In', _moveIn)),
-                  const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Monthly Rent', _monthlyRent)),
-                ],
-              ),
-              Row(
-                children: [
-                  Expanded(child: buildInfoField('Room No.', _roomNo)),
-                  const SizedBox(width: 12),
-                  Expanded(child: buildInfoField('Floor No.', _floorNo)),
-                ],
-              ),
-              const SizedBox(height: 30),
-            ],
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            onPressed: _load,
+            tooltip: 'Refresh',
           ),
-        ),
+        ],
       ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
+          : (_error != null
+                ? Center(
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.white70),
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          const SizedBox(height: 20),
+                          Center(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Stack(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 50,
+                                      backgroundColor: Colors.white,
+                                      child: ClipOval(
+                                        child: _avatarUrl == null
+                                            ? Image.asset(
+                                                'assets/images/josil.png',
+                                                fit: BoxFit.cover,
+                                                width: 95,
+                                                height: 95,
+                                              )
+                                            : Image.network(
+                                                _avatarUrl!,
+                                                fit: BoxFit.cover,
+                                                width: 95,
+                                                height: 95,
+                                                errorBuilder: (_, __, ___) =>
+                                                    Image.asset(
+                                                      'assets/images/josil.png',
+                                                      fit: BoxFit.cover,
+                                                      width: 95,
+                                                      height: 95,
+                                                    ),
+                                              ),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      bottom: 0,
+                                      right: 0,
+                                      child: InkWell(
+                                        onTap: _openEdit,
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: Colors.blueAccent,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 2,
+                                            ),
+                                          ),
+                                          padding: const EdgeInsets.all(5),
+                                          child: const Icon(
+                                            Icons.edit,
+                                            size: 18,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(width: 16),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      displayName.isEmpty
+                                          ? 'Your name'
+                                          : displayName,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      email.isEmpty ? '—' : email,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        SizedBox(
+                                          width: 220,
+                                          height: 40,
+                                          child: ElevatedButton(
+                                            onPressed: _openEdit,
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(
+                                                0xFF5A7689,
+                                              ),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                            child: const Text(
+                                              'Edit Profile',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 20,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 50),
 
-      // Bottom Navigation Bar
+                          // DB-driven fields
+                          Row(
+                            children: [
+                              Expanded(
+                                child: buildInfoField(
+                                  'Full name',
+                                  displayName.isEmpty ? '—' : displayName,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: buildInfoField(
+                                  'Phone',
+                                  (row['phone'] ?? '—').toString(),
+                                ),
+                              ),
+                            ],
+                          ),
+                          buildInfoField(
+                            'Address',
+                            (row['address'] ?? '—').toString(),
+                          ),
+
+                          // Static demo fields (you can wire these later)
+                          buildInfoField('Parent Contacts', '—'),
+                          Row(
+                            children: [
+                              Expanded(child: buildInfoField('Move-In', '—')),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: buildInfoField('Monthly Rent', '—'),
+                              ),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              Expanded(child: buildInfoField('Room No.', '—')),
+                              const SizedBox(width: 12),
+                              Expanded(child: buildInfoField('Floor No.', '—')),
+                            ],
+                          ),
+                          const SizedBox(height: 30),
+                        ],
+                      ),
+                    ),
+                  )),
       bottomNavigationBar: BottomNavigationBar(
         backgroundColor: Colors.white,
         selectedItemColor: Colors.black,
@@ -246,10 +320,8 @@ class _TenantProfileState extends State<TenantProfile> {
         currentIndex: _selectedNavIndex,
         type: BottomNavigationBarType.fixed,
         onTap: (index) {
-          if (index == _selectedNavIndex) return; // Prevent reload
-          setState(() {
-            _selectedNavIndex = index;
-          });
+          if (index == _selectedNavIndex) return;
+          setState(() => _selectedNavIndex = index);
 
           if (index == 0) {
             Navigator.pushReplacement(
@@ -262,7 +334,7 @@ class _TenantProfileState extends State<TenantProfile> {
               MaterialPageRoute(builder: (context) => const TenantListChat()),
             );
           } else if (index == 2) {
-            // Already here
+            // already here
           } else if (index == 3) {
             Navigator.pushReplacement(
               context,
@@ -298,7 +370,7 @@ class _TenantProfileState extends State<TenantProfile> {
     String label,
     int index,
   ) {
-    bool isSelected = _selectedNavIndex == index;
+    final isSelected = _selectedNavIndex == index;
     return BottomNavigationBarItem(
       icon: Column(
         children: [
@@ -343,7 +415,7 @@ class _TenantProfileState extends State<TenantProfile> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
-                value,
+                value.isEmpty ? '—' : value,
                 style: const TextStyle(
                   fontWeight: FontWeight.w600,
                   color: Colors.black87,

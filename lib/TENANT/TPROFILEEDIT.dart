@@ -1,160 +1,149 @@
+// TENANT/TPROFILEEDIT.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TenantEditProfile extends StatefulWidget {
-  // Receive current values from profile
-  final String name;
-  final String email;
-  final String birthday;
-  final String gender;
-  final String address;
-  final String contactNumber;
-  final String guardianContact;
-
-  final String moveIn;
-  final String monthlyRent;
-  final String roomNo;
-  final String floorNo;
-
-  final String? avatarPath;
-
   const TenantEditProfile({
     super.key,
     required this.name,
     required this.email,
-    required this.birthday,
-    required this.gender,
+    required this.phone,
     required this.address,
-    required this.contactNumber,
-    required this.guardianContact,
-    required this.moveIn,
-    required this.monthlyRent,
-    required this.roomNo,
-    required this.floorNo,
-    this.avatarPath,
+    this.currentAvatarUrl,
   });
+
+  final String name;
+  final String email;
+  final String phone;
+  final String address;
+  final String? currentAvatarUrl;
 
   @override
   State<TenantEditProfile> createState() => _TenantEditProfileState();
 }
 
 class _TenantEditProfileState extends State<TenantEditProfile> {
-  // Editable Controllers
-  late final TextEditingController nameCtrl;
-  late final TextEditingController emailCtrl;
-  late final TextEditingController birthdayCtrl;
-  late final TextEditingController genderCtrl;
-  late final TextEditingController addressCtrl;
-  late final TextEditingController contactCtrl;
-  late final TextEditingController guardianCtrl;
+  final _sb = Supabase.instance.client;
+  final _picker = ImagePicker();
 
-  // Read-only Controllers
-  late final TextEditingController moveInController;
-  late final TextEditingController rentController;
-  late final TextEditingController roomNoController;
-  late final TextEditingController floorController;
+  final _nameCtrl = TextEditingController();
+  final _emailCtrl = TextEditingController(); // shown but disabled
+  final _phoneCtrl = TextEditingController();
+  final _addressCtrl = TextEditingController();
 
-  File? _profileImage;
-  String? _avatarPath;
-  final ImagePicker _picker = ImagePicker();
+  File? _pickedImage;
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-
-    nameCtrl = TextEditingController(text: widget.name);
-    emailCtrl = TextEditingController(text: widget.email);
-    birthdayCtrl = TextEditingController(text: widget.birthday);
-    genderCtrl = TextEditingController(text: widget.gender);
-    addressCtrl = TextEditingController(text: widget.address);
-    contactCtrl = TextEditingController(text: widget.contactNumber);
-    guardianCtrl = TextEditingController(text: widget.guardianContact);
-
-    moveInController = TextEditingController(text: widget.moveIn);
-    rentController = TextEditingController(text: widget.monthlyRent);
-    roomNoController = TextEditingController(text: widget.roomNo);
-    floorController = TextEditingController(text: widget.floorNo);
-
-    _avatarPath = widget.avatarPath;
-    if (_avatarPath != null && _avatarPath!.isNotEmpty) {
-      final f = File(_avatarPath!);
-      if (f.existsSync()) _profileImage = f;
-    }
+    _nameCtrl.text = widget.name;
+    _emailCtrl.text = widget.email;
+    _phoneCtrl.text = widget.phone;
+    _addressCtrl.text = widget.address;
   }
 
   @override
   void dispose() {
-    nameCtrl.dispose();
-    emailCtrl.dispose();
-    birthdayCtrl.dispose();
-    genderCtrl.dispose();
-    addressCtrl.dispose();
-    contactCtrl.dispose();
-    guardianCtrl.dispose();
-
-    moveInController.dispose();
-    rentController.dispose();
-    roomNoController.dispose();
-    floorController.dispose();
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
+    _addressCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _pickImage() async {
-    final pickedFile = await _picker.pickImage(
+    final x = await _picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 80,
+      imageQuality: 85,
     );
-
-    if (pickedFile != null) {
-      setState(() {
-        _profileImage = File(pickedFile.path);
-        _avatarPath = pickedFile.path;
-      });
+    if (x != null) {
+      setState(() => _pickedImage = File(x.path));
     }
   }
 
-  Future<void> _selectMoveInDate() async {
-    DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2035),
+  Future<String?> _uploadAvatarIfNeeded(String uid) async {
+    if (_pickedImage == null) return null;
+
+    final ext = p.extension(_pickedImage!.path).toLowerCase();
+    final object = 'avatars/$uid${ext.isNotEmpty ? ext : '.jpg'}';
+
+    final storage = _sb.storage.from('avatars');
+    await storage.upload(
+      object.replaceFirst('avatars/', ''), // bucket-scoped path
+      _pickedImage!,
+      fileOptions: const FileOptions(upsert: true, contentType: 'image/jpeg'),
     );
 
-    if (picked != null) {
-      setState(() {
-        moveInController.text =
-            "${picked.year.toString().padLeft(4, '0')}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
-      });
-    }
+    // Get a public URL you can display
+    final publicUrl = storage.getPublicUrl(object.replaceFirst('avatars/', ''));
+    return publicUrl;
   }
 
-  void _saveAndClose() {
-    // return a map of updated values to the profile screen
-    Navigator.pop<Map<String, dynamic>>(context, {
-      'name': nameCtrl.text.trim(),
-      'email': emailCtrl.text.trim(),
-      'birthday': birthdayCtrl.text.trim(),
-      'gender': genderCtrl.text.trim(),
-      'address': addressCtrl.text.trim(),
-      'contactNumber': contactCtrl.text.trim(),
-      'guardianContact': guardianCtrl.text.trim(),
-      'moveIn': moveInController.text.trim(),
-      'monthlyRent': rentController.text.trim(),
-      'roomNo': roomNoController.text.trim(),
-      'floorNo': floorController.text.trim(),
-      'avatarPath': _avatarPath,
-    });
+  Future<void> _save() async {
+    final uid = _sb.auth.currentUser?.id;
+    if (uid == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Not logged in.')));
+      return;
+    }
+
+    setState(() => _saving = true);
+    try {
+      // 1) Upload avatar if the user picked one
+      final avatarUrl = await _uploadAvatarIfNeeded(uid);
+
+      // 2) Update the public.users row (keeps with your schema)
+      final toUpdate = <String, dynamic>{
+        'full_name': _nameCtrl.text.trim(),
+        'phone': _phoneCtrl.text.trim(),
+        'address': _addressCtrl.text.trim(),
+        // If you add an "avatar_url" column later, uncomment:
+        // if (avatarUrl != null) 'avatar_url': avatarUrl,
+      };
+
+      await _sb.from('users').update(toUpdate).eq('id', uid);
+
+      // 3) (Optional) keep tenant_profile in sync if you use it in other places
+      try {
+        await _sb
+            .from('tenant_profile')
+            .update({
+              'full_name': _nameCtrl.text.trim(),
+              'phone': _phoneCtrl.text.trim(),
+            })
+            .eq('user_id', uid);
+      } catch (_) {
+        // ignore if tenant_profile missing or you don't need it
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Profile updated.')));
+      Navigator.pop(context, true); // tell caller to refresh
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final avatar = _profileImage == null
-        ? (widget.avatarPath == null || widget.avatarPath!.isEmpty)
-              ? const Icon(Icons.camera_alt, size: 50, color: Colors.white)
-              : null
-        : null;
+    final avatar = _pickedImage != null
+        ? Image.file(_pickedImage!, fit: BoxFit.cover)
+        : (widget.currentAvatarUrl != null
+              ? Image.network(widget.currentAvatarUrl!, fit: BoxFit.cover)
+              : Image.asset('assets/images/josil.png', fit: BoxFit.cover));
 
     return Scaffold(
       appBar: AppBar(
@@ -192,7 +181,7 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
               children: [
                 const SizedBox(height: 20),
 
-                // Upload Photo (Circle)
+                // Avatar
                 Center(
                   child: Column(
                     children: [
@@ -205,19 +194,8 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
                             shape: BoxShape.circle,
                             color: Colors.white.withOpacity(0.1),
                             border: Border.all(color: Colors.white, width: 2),
-                            image: _profileImage != null
-                                ? DecorationImage(
-                                    image: FileImage(_profileImage!),
-                                    fit: BoxFit.cover,
-                                  )
-                                : (widget.avatarPath != null &&
-                                      widget.avatarPath!.isNotEmpty)
-                                ? DecorationImage(
-                                    image: FileImage(File(widget.avatarPath!)),
-                                    fit: BoxFit.cover,
-                                  )
-                                : null,
                           ),
+                          clipBehavior: Clip.antiAlias,
                           child: avatar,
                         ),
                       ),
@@ -232,90 +210,24 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
 
                 const SizedBox(height: 30),
 
-                _buildTextField(Icons.person, "Name", controller: nameCtrl),
+                _input(Icons.person, 'Full name', controller: _nameCtrl),
                 const SizedBox(height: 15),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildTextField(
-                        Icons.calendar_today,
-                        "Birthday",
-                        controller: birthdayCtrl,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _buildTextField(
-                        Icons.male,
-                        "Gender",
-                        controller: genderCtrl,
-                      ),
-                    ),
-                  ],
+                _input(
+                  Icons.email,
+                  'Email',
+                  controller: _emailCtrl,
+                  enabled: false,
                 ),
                 const SizedBox(height: 15),
-
-                _buildTextField(
-                  Icons.location_on,
-                  "Address",
-                  controller: addressCtrl,
-                ),
-                const SizedBox(height: 15),
-
-                _buildTextField(Icons.email, "Email", controller: emailCtrl),
-                const SizedBox(height: 15),
-
-                _buildTextField(
+                _input(
                   Icons.phone,
-                  "Contact Number",
-                  controller: contactCtrl,
+                  'Phone',
+                  controller: _phoneCtrl,
+                  keyboardType: TextInputType.phone,
                 ),
                 const SizedBox(height: 15),
+                _input(Icons.location_on, 'Address', controller: _addressCtrl),
 
-                _buildTextField(
-                  Icons.phone,
-                  "Guardian’s Contact No.",
-                  controller: guardianCtrl,
-                ),
-                const SizedBox(height: 15),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: _selectMoveInDate,
-                        child: _buildDisabledField(
-                          Icons.date_range,
-                          moveInController,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _buildDisabledField(
-                        Icons.attach_money,
-                        rentController,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 15),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildDisabledField(
-                        Icons.meeting_room,
-                        roomNoController,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _buildDisabledField(Icons.layers, floorController),
-                    ),
-                  ],
-                ),
                 const SizedBox(height: 30),
 
                 SizedBox(
@@ -328,15 +240,24 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: _saveAndClose,
-                    child: const Text(
-                      "SAVE",
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
+                    onPressed: _saving ? null : _save,
+                    child: _saving
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            "SAVE",
+                            style: TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 40),
@@ -348,49 +269,26 @@ class _TenantEditProfileState extends State<TenantEditProfile> {
     );
   }
 
-  // Editable Text Field
-  Widget _buildTextField(
+  Widget _input(
     IconData icon,
     String hint, {
     required TextEditingController controller,
+    bool enabled = true,
+    TextInputType? keyboardType,
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.85),
+        color: Colors.white.withOpacity(enabled ? 0.95 : 0.6),
         borderRadius: BorderRadius.circular(6),
       ),
       child: TextField(
         controller: controller,
+        enabled: enabled,
+        keyboardType: keyboardType,
         decoration: InputDecoration(
           prefixIcon: Icon(icon, color: Colors.black87),
           hintText: hint,
           hintStyle: const TextStyle(color: Colors.black54),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(
-            vertical: 18,
-            horizontal: 12,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Disabled / Read-only Text Field with Value
-  Widget _buildDisabledField(IconData icon, TextEditingController controller) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey.shade400,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: TextField(
-        controller: controller,
-        enabled: false,
-        style: TextStyle(
-          color: Colors.grey.shade800,
-          fontWeight: FontWeight.w500,
-        ),
-        decoration: InputDecoration(
-          prefixIcon: Icon(icon, color: Colors.grey.shade600),
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(
             vertical: 18,

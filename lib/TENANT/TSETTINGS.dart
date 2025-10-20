@@ -60,35 +60,7 @@ class _TenantSettingsState extends State<TenantSettings> {
             ),
             const SizedBox(height: 12),
 
-            // Edit Profile Tile
-            _buildTile(
-              leading: const Icon(Icons.person, color: Colors.black54),
-              title: 'Account',
-              subtitle: 'Edit Profile',
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => TenantEditProfile(
-                      name: 'Mykel Josh Nombrads',
-                      email: '@mykeljoshnombrads.gmail.com',
-                      birthday: 'May 11, 2003',
-                      gender: 'Male',
-                      address: 'Davao City, Brgy Maa, Grava...',
-                      contactNumber: '09612783021',
-                      guardianContact: '09612783021',
-                      moveIn: '2025-08-17',
-                      monthlyRent: '₱3,750',
-                      roomNo: 'L204',
-                      floorNo: '3RD Floor',
-                    ),
-                  ),
-                );
-              },
-              showTrailingArrow: true,
-            ),
-            const SizedBox(height: 12),
-
+            
             // Notification Tile
             _buildTile(
               leading: const Icon(Icons.notifications, color: Colors.black54),
@@ -248,8 +220,7 @@ class _TenantSettingsState extends State<TenantSettings> {
         leading: leading,
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Text(subtitle),
-        trailing:
-            trailing ??
+        trailing: trailing ??
             (showTrailingArrow
                 ? const Icon(Icons.arrow_forward_ios, size: 16)
                 : null),
