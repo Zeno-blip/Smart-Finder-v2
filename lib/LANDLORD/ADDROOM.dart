@@ -1,4 +1,4 @@
-// addroom.dart
+// lib/addroom.dart
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -6,7 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:panorama_viewer/panorama_viewer.dart'; // using your chosen pkg
+import 'package:panorama_viewer/panorama_viewer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
@@ -17,7 +17,6 @@ class _NeedsLogin implements Exception {
   String toString() => '_NeedsLogin';
 }
 
-/// Make sure this storage bucket exists and is PUBLIC in Supabase.
 const String kRoomImagesBucket = 'room-images';
 
 class LocalImage {
@@ -80,7 +79,6 @@ class _AddroomState extends State<Addroom> {
   final List<LocalImage> roomImages = [];
   final ImagePicker _picker = ImagePicker();
 
-  /// Hotspots keyed by *source* image index.
   Map<int, List<Hotspot>> hotspotsByImageIndex = {};
 
   final TextEditingController floorCtrl = TextEditingController();
@@ -95,7 +93,7 @@ class _AddroomState extends State<Addroom> {
   @override
   void initState() {
     super.initState();
-    _loadLandlordInfo(); // auto-fill apartment name + address
+    _loadLandlordInfo();
   }
 
   @override
@@ -109,12 +107,9 @@ class _AddroomState extends State<Addroom> {
     super.dispose();
   }
 
-  /// Fetch landlord address + default apartment name.
-  /// First try landlord_profile; fallback to users table (per your ERD).
   Future<void> _loadLandlordInfo() async {
     final user = _sb.auth.currentUser;
     if (user == null) return;
-
     try {
       final lp = await _sb
           .from('landlord_profile')
@@ -140,9 +135,7 @@ class _AddroomState extends State<Addroom> {
         locationCtrl.text = address;
         nameCtrl.text = aptName;
       });
-    } catch (e) {
-      debugPrint('Failed to load landlord profile: $e');
-    }
+    } catch (_) {}
   }
 
   String _orEq(String column, List<String> values) =>
@@ -159,22 +152,21 @@ class _AddroomState extends State<Addroom> {
   double _round(double v, [int digits = 6]) =>
       double.parse(v.toStringAsFixed(digits));
 
-  // ---- small helper: label widget
   Widget _fieldLabel(String text) => Align(
-        alignment: Alignment.centerLeft,
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 6, left: 2),
-          child: Text(
-            text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              letterSpacing: .2,
-            ),
-          ),
+    alignment: Alignment.centerLeft,
+    child: Padding(
+      padding: const EdgeInsets.only(bottom: 6, left: 2),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          letterSpacing: .2,
         ),
-      );
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -214,12 +206,10 @@ class _AddroomState extends State<Addroom> {
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
-                      // ---- Images
                       _fieldLabel('Room Images / Panoramas'),
                       _buildImagesGrid(),
                       const SizedBox(height: 20),
 
-                      // ---- Floor number
                       _fieldLabel('Floor Number'),
                       _buildTextField(
                         Icons.stairs,
@@ -228,7 +218,6 @@ class _AddroomState extends State<Addroom> {
                         controller: floorCtrl,
                       ),
 
-                      // ---- Apartment name (auto)
                       _fieldLabel('Apartment Name'),
                       _buildTextField(
                         Icons.apartment,
@@ -237,7 +226,6 @@ class _AddroomState extends State<Addroom> {
                         readOnly: true,
                       ),
 
-                      // ---- Address (auto)
                       _fieldLabel('Address'),
                       _buildTextField(
                         Icons.location_on,
@@ -246,7 +234,6 @@ class _AddroomState extends State<Addroom> {
                         readOnly: true,
                       ),
 
-                      // ---- Monthly rate
                       _fieldLabel('Monthly Rate'),
                       _buildTextField(
                         Icons.payments,
@@ -255,7 +242,6 @@ class _AddroomState extends State<Addroom> {
                         controller: monthlyCtrl,
                       ),
 
-                      // ---- Advance deposit
                       _fieldLabel('Advance Deposit'),
                       _buildTextField(
                         Icons.attach_money,
@@ -264,7 +250,6 @@ class _AddroomState extends State<Addroom> {
                         controller: depositCtrl,
                       ),
 
-                      // ---- Inclusion
                       _fieldLabel('Inclusions'),
                       _buildMultiSelect(
                         icon: Icons.chair,
@@ -275,7 +260,6 @@ class _AddroomState extends State<Addroom> {
                             setState(() => inclusions = selected),
                       ),
 
-                      // ---- Preference
                       _fieldLabel('Preference'),
                       _buildMultiSelect(
                         icon: Icons.sell,
@@ -286,7 +270,6 @@ class _AddroomState extends State<Addroom> {
                             setState(() => preferences = selected),
                       ),
 
-                      // ---- Description
                       _fieldLabel('Description'),
                       Container(
                         margin: const EdgeInsets.only(bottom: 20),
@@ -325,7 +308,9 @@ class _AddroomState extends State<Addroom> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                        onPressed: _saving ? null : () => Navigator.pop(context),
+                        onPressed: _saving
+                            ? null
+                            : () => Navigator.pop(context),
                         child: const Text(
                           "Cancel",
                           style: TextStyle(
@@ -400,39 +385,36 @@ class _AddroomState extends State<Addroom> {
     );
   }
 
-  // ---------- Images grid ----------
+  // ---------- Images grid with hotspot counters ----------
   Widget _buildImagesGrid() {
     final tiles = <Widget>[
       for (int i = 0; i < roomImages.length; i++)
         GestureDetector(
           onTap: () => _replaceImage(i),
           onLongPress: () => _confirmDeleteImage(i),
-          child: Container(
-            width: 110,
-            height: 110,
-            decoration: BoxDecoration(
-              color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(10),
-              image: DecorationImage(
-                image: roomImages[i].provider(),
-                fit: BoxFit.cover,
-              ),
-            ),
-            child: Align(
-              alignment: Alignment.topRight,
-              child: Container(
-                margin: const EdgeInsets.all(6),
-                padding: const EdgeInsets.all(4),
+          child: Stack(
+            children: [
+              Container(
+                width: 110,
+                height: 110,
                 decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '#${i + 1}',
-                  style: const TextStyle(color: Colors.white, fontSize: 10),
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(10),
+                  image: DecorationImage(
+                    image: roomImages[i].provider(),
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
-            ),
+              Positioned(top: 6, right: 6, child: _tinyBadge('#${i + 1}')),
+              Positioned(
+                bottom: 6,
+                right: 6,
+                child: _tinyBadge(
+                  'HS: ${(hotspotsByImageIndex[i] ?? const []).length}',
+                ),
+              ),
+            ],
           ),
         ),
       InkWell(
@@ -466,9 +448,25 @@ class _AddroomState extends State<Addroom> {
     );
   }
 
+  Widget _tinyBadge(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(color: Colors.white, fontSize: 10),
+      ),
+    );
+  }
+
   Future<void> _pickAndAddImage() async {
     try {
-      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+      );
       if (picked != null) {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages.add(LocalImage(bytes)));
@@ -478,7 +476,9 @@ class _AddroomState extends State<Addroom> {
 
   Future<void> _replaceImage(int index) async {
     try {
-      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+      );
       if (picked != null) {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages[index] = LocalImage(bytes));
@@ -533,8 +533,9 @@ class _AddroomState extends State<Addroom> {
 
       for (final h in entry.value) {
         if (h.targetImageIndex == removedIndex) continue;
-        final newTarget =
-            h.targetImageIndex > removedIndex ? h.targetImageIndex - 1 : h.targetImageIndex;
+        final newTarget = h.targetImageIndex > removedIndex
+            ? h.targetImageIndex - 1
+            : h.targetImageIndex;
         newList.add(h.copyWith(targetImageIndex: newTarget));
       }
       out[newKey] = newList;
@@ -590,7 +591,6 @@ class _AddroomState extends State<Addroom> {
       return false;
     }
 
-    // Ensure we have latest landlord info (guard against cleared text)
     String location = locationCtrl.text.trim();
     String aptName = nameCtrl.text.trim();
     if (location.isEmpty || aptName.isEmpty) {
@@ -605,7 +605,6 @@ class _AddroomState extends State<Addroom> {
       } catch (_) {}
     }
 
-    // 1) Create room (status defaults to 'pending')
     final monthly = double.tryParse(monthlyCtrl.text.trim());
     final deposit = double.tryParse(depositCtrl.text.trim());
     final floor = int.tryParse(floorCtrl.text.trim());
@@ -620,14 +619,13 @@ class _AddroomState extends State<Addroom> {
           'monthly_payment': monthly,
           'advance_deposit': deposit,
           'description': descCtrl.text.trim(),
-          'status': 'pending', // important
+          'status': 'pending',
         })
         .select('id')
         .single();
 
     final String roomId = room['id'] as String;
 
-    // 2) Upload images + insert room_images
     final List<Map<String, dynamic>> imageRows = [];
     for (int i = 0; i < roomImages.length; i++) {
       final li = roomImages[i];
@@ -662,12 +660,10 @@ class _AddroomState extends State<Addroom> {
       imageRows.add(inserted);
     }
 
-    // sort_order -> image_id
     final Map<int, String> imageIdBySort = {
       for (final r in imageRows) (r['sort_order'] as int): (r['id'] as String),
     };
 
-    // 3) Insert hotspots: store RADIAN values directly (dx, dy)
     for (final entry in hotspotsByImageIndex.entries) {
       final srcIdx = entry.key;
       final srcId = imageIdBySort[srcIdx];
@@ -678,7 +674,6 @@ class _AddroomState extends State<Addroom> {
         if (tgtId == null) continue;
 
         double lon = h.dx;
-        // wrap to [-pi, pi]
         while (lon <= -math.pi) lon += 2 * math.pi;
         while (lon > math.pi) lon -= 2 * math.pi;
         final double lat = _clamp(h.dy, -math.pi / 2, math.pi / 2);
@@ -687,39 +682,9 @@ class _AddroomState extends State<Addroom> {
           'room_id': roomId,
           'source_image_id': srcId,
           'target_image_id': tgtId,
-          'dx': _round(lon, 6), // radians
-          'dy': _round(lat, 6), // radians
+          'dx': _round(lon, 6),
+          'dy': _round(lat, 6),
           'label': h.label,
-        });
-      }
-    }
-
-    // 4) Inclusions
-    if (inclusions.isNotEmpty) {
-      final incList = await supabase
-              .from('inclusion_options')
-              .select('id,name')
-              .or(_orEq('name', inclusions))
-          as List;
-      for (final o in incList) {
-        await supabase.from('room_inclusions').insert({
-          'room_id': roomId,
-          'inclusion_id': o['id'],
-        });
-      }
-    }
-
-    // 5) Preferences
-    if (preferences.isNotEmpty) {
-      final prefList = await supabase
-              .from('preference_options')
-              .select('id,name')
-              .or(_orEq('name', preferences))
-          as List;
-      for (final o in prefList) {
-        await supabase.from('room_preferences').insert({
-          'room_id': roomId,
-          'preference_id': o['id'],
         });
       }
     }
@@ -740,7 +705,7 @@ class _AddroomState extends State<Addroom> {
       final result = await Navigator.push<Map<int, List<Hotspot>>>(
         context,
         MaterialPageRoute(
-          builder: (_) => HotspotEditor(
+          builder: (_) => HotspotEditorPV(
             images: List<LocalImage>.from(roomImages),
             initialHotspotsByImageIndex: {
               for (final e in hotspotsByImageIndex.entries)
@@ -749,7 +714,20 @@ class _AddroomState extends State<Addroom> {
           ),
         ),
       );
-      if (result != null) setState(() => hotspotsByImageIndex = result);
+      if (result != null) {
+        setState(() {
+          hotspotsByImageIndex = {
+            for (final e in result.entries) e.key: List<Hotspot>.from(e.value),
+          };
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Saved hotspots. Total: ${hotspotsByImageIndex.values.fold<int>(0, (p, l) => p + l.length)}',
+            ),
+          ),
+        );
+      }
     }
   }
 
@@ -771,8 +749,9 @@ class _AddroomState extends State<Addroom> {
         controller: controller,
         readOnly: readOnly,
         keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        inputFormatters:
-            isNumber ? [FilteringTextInputFormatter.digitsOnly] : [],
+        inputFormatters: isNumber
+            ? [FilteringTextInputFormatter.digitsOnly]
+            : [],
         decoration: InputDecoration(
           icon: Icon(icon, color: Colors.black54),
           border: InputBorder.none,
@@ -862,30 +841,35 @@ class _AddroomState extends State<Addroom> {
   }
 }
 
-// ===================== Hotspot Editor =====================
+/* ========= Boxed hotspot editor (panorama_viewer) ========= */
 
-class HotspotEditor extends StatefulWidget {
+class HotspotEditorPV extends StatefulWidget {
   final List<LocalImage> images;
   final Map<int, List<Hotspot>> initialHotspotsByImageIndex;
 
-  const HotspotEditor({
+  const HotspotEditorPV({
     super.key,
     required this.images,
     required this.initialHotspotsByImageIndex,
   });
 
   @override
-  State<HotspotEditor> createState() => _HotspotEditorState();
+  State<HotspotEditorPV> createState() => _HotspotEditorPVState();
 }
 
-class _HotspotEditorState extends State<HotspotEditor> {
+class _HotspotEditorPVState extends State<HotspotEditorPV> {
   late Map<int, List<Hotspot>> hotspotsByImageIndex;
   int currentIndex = 0;
 
-  // Which hotspot within current image is selected for editing
-  int? selectedHotspotIdx;
+  bool addMode = false;
 
-  late List<Size?> _imgSizes;
+  double _viewLon = 0.0; // yaw
+  double _viewLat = 0.0; // pitch
+  double _viewTilt = 0.0;
+
+  // Field-of-view model (approx): 180° horizontal, 90° vertical.
+  static const double _hFov = math.pi; // 180°
+  static const double _vFov = math.pi / 2; // 90°
 
   @override
   void initState() {
@@ -894,43 +878,87 @@ class _HotspotEditorState extends State<HotspotEditor> {
       for (final e in widget.initialHotspotsByImageIndex.entries)
         e.key: List<Hotspot>.from(e.value),
     };
-    _imgSizes = List<Size?>.filled(widget.images.length, null);
-    _ensureDecoded(currentIndex);
   }
 
-  List<Hotspot> _hotspotsForCurrent() =>
-      hotspotsByImageIndex[currentIndex] ?? <Hotspot>[];
+  List<Hotspot> _spots() =>
+      hotspotsByImageIndex[currentIndex] ??
+      (hotspotsByImageIndex[currentIndex] = <Hotspot>[]);
 
-  Future<void> _ensureDecoded(int i) async {
-    if (_imgSizes[i] != null) return;
-    try {
-      final ui.Codec codec =
-          await ui.instantiateImageCodec(widget.images[i].bytes);
-      final ui.FrameInfo frame = await codec.getNextFrame();
-      final ui.Image img = frame.image;
-      _imgSizes[i] = Size(img.width.toDouble(), img.height.toDouble());
-      img.dispose();
-      codec.dispose();
-      if (mounted) setState(() {});
-    } catch (_) {}
+  double _wrap(double a) {
+    while (a > math.pi) a -= 2 * math.pi;
+    while (a < -math.pi) a += 2 * math.pi;
+    return a;
   }
 
-  /// New: “Create & link new panorama” during hotspot linking
-  Future<int?> _createAndAppendPanorama() async {
-    try {
-      final XFile? picked =
-          await ImagePicker().pickImage(source: ImageSource.gallery);
-      if (picked == null) return null;
-      final bytes = await picked.readAsBytes();
-      final newIndex = widget.images.length;
-      setState(() {
-        widget.images.add(LocalImage(bytes));
-        _imgSizes.add(null);
-      });
-      _ensureDecoded(newIndex);
-      return newIndex;
-    } catch (_) {
-      return null;
+  // Proper world-anchored projection:
+  // - compute delta to current view center
+  // - hide when outside FOV
+  // - map delta to screen pixels
+  Offset? _projectToOverlay(Size box, double lon, double lat) {
+    final dLon = _wrap(lon - _viewLon);
+    if (dLon.abs() > _hFov / 2) return null;
+
+    final dLat = (lat - _viewLat).clamp(-math.pi / 2, math.pi / 2);
+    if (dLat.abs() > _vFov / 2) return null;
+
+    final x = box.width * (0.5 + dLon / _hFov);
+    final y = box.height * (0.5 - dLat / _vFov);
+    return Offset(x, y);
+  }
+
+  void _toggleAddMode() {
+    setState(() => addMode = !addMode);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          addMode
+              ? 'Tap inside the panorama to place a hotspot'
+              : 'Add mode off',
+        ),
+      ),
+    );
+  }
+
+  // INSTANT ADD then edit
+  Future<void> _onTapPano(double lon, double lat, double tilt) async {
+    if (!addMode) return;
+
+    final newHotspot = Hotspot(
+      dx: _wrap(lon),
+      dy: lat.clamp(-math.pi / 2, math.pi / 2),
+      targetImageIndex: currentIndex,
+      label: null,
+    );
+
+    final idx = _spots().length;
+    setState(() {
+      _spots().add(newHotspot);
+      addMode = false;
+    });
+
+    await _editJustAdded(idx);
+
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Hotspot added')));
+    }
+  }
+
+  Future<void> _editJustAdded(int idx) async {
+    final current = _spots()[idx];
+    final t = await _pickTargetImageIndex(
+      currentTarget: current.targetImageIndex,
+    );
+    if (t != null && mounted) {
+      setState(
+        () => _spots()[idx] = _spots()[idx].copyWith(targetImageIndex: t),
+      );
+    }
+
+    final lbl = await _askLabel(initial: _spots()[idx].label ?? '');
+    if (lbl != null && mounted) {
+      setState(() => _spots()[idx] = _spots()[idx].copyWith(label: lbl));
     }
   }
 
@@ -941,43 +969,25 @@ class _HotspotEditorState extends State<HotspotEditor> {
         title: const Text('Link hotspot to image'),
         content: SizedBox(
           width: 360,
-          height: 320,
-          child: Column(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  itemCount: widget.images.length,
-                  itemBuilder: (context, i) {
-                    return ListTile(
-                      leading: SizedBox(
-                        width: 48,
-                        height: 48,
-                        child: widget.images[i].widget(fit: BoxFit.cover),
-                      ),
-                      title: Text(
-                        'Image ${i + 1}${i == currentIndex ? " (current)" : ""}',
-                      ),
-                      subtitle: Text(
-                        i == currentTarget ? 'Current target' : 'Tap to select',
-                      ),
-                      onTap: () => Navigator.pop(context, i),
-                    );
-                  },
+          height: 260,
+          child: ListView.builder(
+            itemCount: widget.images.length,
+            itemBuilder: (context, i) {
+              return ListTile(
+                leading: SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: widget.images[i].widget(fit: BoxFit.cover),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.add_a_photo),
-                  label: const Text('Create & link new panorama'),
-                  onPressed: () async {
-                    final idx = await _createAndAppendPanorama();
-                    if (idx != null) Navigator.pop(context, idx);
-                  },
+                title: Text(
+                  'Image ${i + 1}${i == currentIndex ? " (current)" : ""}',
                 ),
-              ),
-            ],
+                subtitle: Text(
+                  i == currentTarget ? 'Current target' : 'Tap to select',
+                ),
+                onTap: () => Navigator.pop(context, i),
+              );
+            },
           ),
         ),
         actions: [
@@ -1017,62 +1027,70 @@ class _HotspotEditorState extends State<HotspotEditor> {
     );
   }
 
-  Future<void> _addHotspotFlow() async {
-    final target = await _pickTargetImageIndex();
-    if (target == null) return;
-    final label = await _askLabel();
+  void _onMarkerTap(Hotspot h, int idx) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.directions),
+              title: const Text('Jump to target'),
+              onTap: () => Navigator.pop(ctx, 'jump'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit),
+              title: const Text('Edit target'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.label),
+              title: const Text('Edit label'),
+              onTap: () => Navigator.pop(ctx, 'label'),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.delete, color: Colors.red),
+              title: const Text('Delete', style: TextStyle(color: Colors.red)),
+              onTap: () => Navigator.pop(ctx, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
 
-    setState(() {
-      final list = _hotspotsForCurrent();
-      list.add(
-        Hotspot(
-          dx: 0.0, // radians (longitude)
-          dy: 0.0, // radians (latitude)
-          targetImageIndex: target,
-          label: label,
+    if (!mounted || action == null) return;
+
+    if (action == 'jump') {
+      setState(
+        () => currentIndex = h.targetImageIndex.clamp(
+          0,
+          widget.images.length - 1,
         ),
       );
-      hotspotsByImageIndex[currentIndex] = List.from(list);
-      selectedHotspotIdx = list.length - 1;
-    });
-
-    // If we just created a new pano, jump there
-    if (target == widget.images.length - 1 && selectedHotspotIdx != null) {
-      setState(() {
-        currentIndex = target;
-        _ensureDecoded(currentIndex);
-        selectedHotspotIdx = null;
-      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Jumped to image ${currentIndex + 1}')),
+      );
+    } else if (action == 'delete') {
+      setState(() => _spots().removeAt(idx));
+    } else if (action == 'edit') {
+      final newTarget = await _pickTargetImageIndex(
+        currentTarget: h.targetImageIndex,
+      );
+      if (newTarget != null) {
+        setState(() => _spots()[idx] = h.copyWith(targetImageIndex: newTarget));
+      }
+    } else if (action == 'label') {
+      final newLabel = await _askLabel(initial: h.label ?? '');
+      setState(() => _spots()[idx] = h.copyWith(label: newLabel));
     }
   }
 
-  void _deleteHotspot(int idx) {
-    setState(() {
-      final list = _hotspotsForCurrent();
-      list.removeAt(idx);
-      hotspotsByImageIndex[currentIndex] = List.from(list);
-      if (selectedHotspotIdx != null) {
-        if (list.isEmpty) {
-          selectedHotspotIdx = null;
-        } else {
-          selectedHotspotIdx =
-              (selectedHotspotIdx!.clamp(0, list.length - 1));
-        }
-      }
-    });
-  }
-
-  String _fmtRad(num r) =>
-      '${r.toStringAsFixed(3)} rad (${(r * 180 / math.pi).toStringAsFixed(1)}°)';
-
   @override
   Widget build(BuildContext context) {
-    final spots = _hotspotsForCurrent();
-    final hasSelection =
-        selectedHotspotIdx != null &&
-        selectedHotspotIdx! >= 0 &&
-        selectedHotspotIdx! < spots.length;
-    final selected = hasSelection ? spots[selectedHotspotIdx!] : null;
+    final double maxWidth = MediaQuery.of(context).size.width;
+    final double boxHeight = (maxWidth / 2.0).clamp(240.0, 460.0);
 
     return Scaffold(
       appBar: AppBar(
@@ -1081,7 +1099,13 @@ class _HotspotEditorState extends State<HotspotEditor> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, hotspotsByImageIndex),
+            onPressed: () {
+              final payload = <int, List<Hotspot>>{
+                for (final e in hotspotsByImageIndex.entries)
+                  e.key: [for (final h in e.value) h],
+              };
+              Navigator.pop(context, payload);
+            },
             child: const Text('Save', style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -1089,19 +1113,14 @@ class _HotspotEditorState extends State<HotspotEditor> {
       ),
       body: Column(
         children: [
-          // --- Top: Image index controls
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Row(
               children: [
                 IconButton(
                   icon: const Icon(Icons.chevron_left),
                   onPressed: currentIndex > 0
-                      ? () => setState(() {
-                            currentIndex--;
-                            _ensureDecoded(currentIndex);
-                            selectedHotspotIdx = null;
-                          })
+                      ? () => setState(() => currentIndex--)
                       : null,
                 ),
                 Expanded(
@@ -1123,234 +1142,129 @@ class _HotspotEditorState extends State<HotspotEditor> {
                 IconButton(
                   icon: const Icon(Icons.chevron_right),
                   onPressed: currentIndex < widget.images.length - 1
-                      ? () => setState(() {
-                            currentIndex++;
-                            _ensureDecoded(currentIndex);
-                            selectedHotspotIdx = null;
-                          })
+                      ? () => setState(() => currentIndex++)
                       : null,
                 ),
               ],
             ),
           ),
-
-          // --- Panorama viewer
-          // Anti-stretch: lock to aspect ratio. If the file is 2:1, it displays correctly.
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final Size? natural = _imgSizes[currentIndex];
-              // fall back to 2:1 if we don’t know yet
-              final ratio = (natural != null && natural.width > 0)
-                  ? natural.width / natural.height
-                  : 2.0;
-              final aspectRatio = ratio <= 0 ? 2.0 : ratio;
-              // height clamp to keep UI sane
-              final width = constraints.maxWidth - 16;
-              var height = width / aspectRatio;
-              height = height.clamp(200.0, 520.0);
-
-              return SizedBox(
-                height: height,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.05),
-                        border: Border.all(color: Colors.black12),
-                      ),
-                      child: PanoramaViewer(
-                        // Do NOT force a BoxFit here; let the pano widget map it.
-                        child: Image.memory(
-                          widget.images[currentIndex].bytes,
-                          gaplessPlayback: true,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-
-          // --- List of hotspots for this image
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-              child: spots.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No hotspots yet. Tap “Add Hotspot” to create one.',
-                        style: TextStyle(color: Colors.black54),
-                      ),
-                    )
-                  : ListView.separated(
-                      itemCount: spots.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (ctx, i) {
-                        final h = spots[i];
-                        return ListTile(
-                          leading: const Icon(Icons.place),
-                          title: Text(
-                            h.label?.isNotEmpty == true
-                                ? h.label!
-                                : 'Hotspot ${i + 1}',
-                          ),
-                          subtitle: Text(
-                            'Target: Image ${h.targetImageIndex + 1} • '
-                            'dx: ${_fmtRad(h.dx)} • dy: ${_fmtRad(h.dy)}',
-                          ),
-                          selected: selectedHotspotIdx == i,
-                          onTap: () => setState(() => selectedHotspotIdx = i),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (v) async {
-                              if (v == 'jump') {
-                                setState(() {
-                                  currentIndex = h.targetImageIndex.clamp(
-                                    0,
-                                    widget.images.length - 1,
-                                  );
-                                  _ensureDecoded(currentIndex);
-                                  selectedHotspotIdx = null;
-                                });
-                              } else if (v == 'editTarget') {
-                                final t = await _pickTargetImageIndex(
-                                  currentTarget: h.targetImageIndex,
-                                );
-                                if (t != null) {
-                                  setState(() {
-                                    spots[i] = h.copyWith(targetImageIndex: t);
-                                    hotspotsByImageIndex[currentIndex] =
-                                        List.from(spots);
-                                  });
-                                }
-                              } else if (v == 'editLabel') {
-                                final lbl = await _askLabel(
-                                  initial: h.label ?? '',
-                                );
-                                setState(() {
-                                  spots[i] = h.copyWith(label: lbl);
-                                  hotspotsByImageIndex[currentIndex] =
-                                      List.from(spots);
-                                });
-                              } else if (v == 'createAndLink') {
-                                final idx = await _createAndAppendPanorama();
-                                if (idx != null) {
-                                  setState(() {
-                                    spots[i] = h.copyWith(targetImageIndex: idx);
-                                    hotspotsByImageIndex[currentIndex] =
-                                        List.from(spots);
-                                    currentIndex = idx;
-                                    _ensureDecoded(currentIndex);
-                                    selectedHotspotIdx = null;
-                                  });
-                                }
-                              } else if (v == 'delete') {
-                                _deleteHotspot(i);
-                              }
-                            },
-                            itemBuilder: (ctx) => const [
-                              PopupMenuItem(
-                                value: 'jump',
-                                child: Text('Jump to target'),
-                              ),
-                              PopupMenuItem(
-                                value: 'editTarget',
-                                child: Text('Edit target'),
-                              ),
-                              PopupMenuItem(
-                                value: 'createAndLink',
-                                child: Text('Create & link new panorama'),
-                              ),
-                              PopupMenuItem(
-                                value: 'editLabel',
-                                child: Text('Edit label'),
-                              ),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('Delete'),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ),
-
-          // --- Sliders for selected hotspot (radian ranges)
-          if (hasSelection)
-            Container(
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12.0),
+            child: Container(
+              height: boxHeight,
               width: double.infinity,
-              color: Colors.grey.shade100,
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Adjust ${(selected!.label?.isNotEmpty ?? false) ? selected.label! : "Hotspot ${selectedHotspotIdx! + 1}"}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  Row(
-                    children: [
-                      const SizedBox(width: 86, child: Text('Longitude')),
-                      Expanded(
-                        child: Slider(
-                          value: selected.dx,
-                          min: -math.pi,
-                          max: math.pi,
-                          label: _fmtRad(selected.dx),
-                          onChanged: (v) {
-                            setState(() {
-                              final spots = _hotspotsForCurrent();
-                              spots[selectedHotspotIdx!] = selected.copyWith(
-                                dx: v,
-                              );
-                              hotspotsByImageIndex[currentIndex] =
-                                  List.from(spots);
-                            });
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      const SizedBox(width: 86, child: Text('Latitude')),
-                      Expanded(
-                        child: Slider(
-                          value: selected.dy,
-                          min: -math.pi / 2,
-                          max: math.pi / 2,
-                          label: _fmtRad(selected.dy),
-                          onChanged: (v) {
-                            setState(() {
-                              final spots = _hotspotsForCurrent();
-                              spots[selectedHotspotIdx!] = selected.copyWith(
-                                dy: v,
-                              );
-                              hotspotsByImageIndex[currentIndex] =
-                                  List.from(spots);
-                            });
-                          },
-                        ),
-                      ),
-                    ],
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.black, width: 2),
+                boxShadow: const [
+                  BoxShadow(
+                    blurRadius: 8,
+                    offset: Offset(0, 2),
+                    color: Colors.black26,
                   ),
                 ],
+              ),
+              child: ClipRect(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: PanoramaViewer(
+                        longitude: _viewLon,
+                        latitude: _viewLat.clamp(-1.2, 1.2),
+                        onViewChanged: (lon, lat, tilt) {
+                          setState(() {
+                            _viewLon = lon;
+                            _viewLat = lat;
+                            _viewTilt = tilt;
+                          });
+                        },
+                        onTap: (lon, lat, tilt) => _onTapPano(lon, lat, tilt),
+                        child: Image.memory(widget.images[currentIndex].bytes),
+                      ),
+                    ),
+                    // overlay markers projected to current view using FOV window
+                    Positioned.fill(
+                      child: LayoutBuilder(
+                        builder: (context, b) {
+                          final box = Size(b.maxWidth, b.maxHeight);
+                          final children = <Widget>[];
+                          final spots = _spots();
+                          for (int i = 0; i < spots.length; i++) {
+                            final h = spots[i];
+                            final pos = _projectToOverlay(box, h.dx, h.dy);
+                            if (pos == null) continue; // offscreen -> hide
+                            children.add(
+                              Positioned(
+                                left: pos.dx - 24,
+                                top: pos.dy - 24,
+                                child: GestureDetector(
+                                  onTap: () => _onMarkerTap(h, i),
+                                  child: _marker(h),
+                                ),
+                              ),
+                            );
+                          }
+                          return Stack(children: children);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (addMode)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0, top: 8),
+              child: Text(
+                'Add mode: tap anywhere in the panorama to place a hotspot',
+                style: TextStyle(color: Colors.black.withOpacity(0.7)),
               ),
             ),
         ],
       ),
-
-      // Add Hotspot
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addHotspotFlow,
-        backgroundColor: const Color(0xFF00324E),
-        icon: const Icon(Icons.add_location_alt),
-        label: const Text('Add Hotspot'),
+        onPressed: _toggleAddMode,
+        backgroundColor: addMode ? Colors.red : const Color(0xFF00324E),
+        icon: Icon(addMode ? Icons.close : Icons.add_location_alt),
+        label: Text(addMode ? 'Cancel' : 'Add Hotspot'),
       ),
+    );
+  }
+
+  // Big arrow marker so your eyes have no excuses
+  Widget _marker(Hotspot h) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if ((h.label ?? '').isNotEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            margin: const EdgeInsets.only(bottom: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.75),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              h.label!,
+              style: const TextStyle(color: Colors.white, fontSize: 11),
+            ),
+          ),
+        Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black38)],
+            border: Border.all(color: Colors.black87, width: 2),
+          ),
+          child: const Center(
+            child: Icon(Icons.near_me, size: 26, color: Colors.deepPurple),
+          ),
+        ),
+      ],
     );
   }
 }
