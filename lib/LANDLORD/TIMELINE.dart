@@ -10,9 +10,11 @@ import 'APARTMENT.dart';
 import 'TENANTS.dart';
 import 'TOTALROOM.dart';
 import 'LOGIN.dart';
-// import 'EDITROOM.dart'; // ← removed
 import 'ROOMINFO.dart';
 import 'ADDROOM.dart';
+
+// Landlord map page that shows the address
+import 'gmap.dart' show Gmap;
 
 class Timeline extends StatefulWidget {
   const Timeline({super.key});
@@ -37,11 +39,11 @@ class _TimelineState extends State<Timeline> {
   int currentPage = 0;
   final int cardsPerPage = 5;
   final ScrollController _scrollController = ScrollController();
+
   int _selectedIndex = 1; // Timeline tab
   bool _loading = true;
 
-  // ============ NOTIFICATIONS ============
-
+  // ================== NOTIFICATIONS ==================
   Future<void> _loadNotifications() async {
     if (_userId == null) return;
     final data = await supabase
@@ -54,14 +56,15 @@ class _TimelineState extends State<Timeline> {
     _notifs
       ..clear()
       ..addAll((data as List).cast<Map<String, dynamic>>());
+
     _unread = _notifs.where((n) => (n['is_read'] as bool?) == false).length;
+
     if (mounted) setState(() {});
   }
 
   void _subscribeNotifications() {
     if (_userId == null) return;
     _notifChannel?.unsubscribe();
-
     _notifChannel = supabase.channel('notifs-timeline-${_userId!}')
       ..onPostgresChanges(
         event: PostgresChangeEvent.insert,
@@ -122,6 +125,7 @@ class _TimelineState extends State<Timeline> {
     }
   }
 
+  // Restored: open notifications bottom sheet
   void _openNotifications() {
     showModalBottomSheet(
       context: context,
@@ -204,8 +208,7 @@ class _TimelineState extends State<Timeline> {
     );
   }
 
-  // ============ TIMELINE (rooms) ============
-
+  // ================== TIMELINE ==================
   @override
   void initState() {
     super.initState();
@@ -227,7 +230,6 @@ class _TimelineState extends State<Timeline> {
       setState(() => _loading = false);
       return;
     }
-
     setState(() => _loading = true);
 
     final List data = await supabase
@@ -268,9 +270,7 @@ class _TimelineState extends State<Timeline> {
 
   void _onNavTap(int index) {
     if (_selectedIndex == index) return;
-
     setState(() => _selectedIndex = index);
-
     if (index == 0) {
       Navigator.pushReplacement(
         context,
@@ -420,7 +420,6 @@ class _TimelineState extends State<Timeline> {
   }
 
   // ---------- UI helpers ----------
-
   Widget _buildTopControls() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12),
@@ -499,28 +498,56 @@ class _TimelineState extends State<Timeline> {
     final String? imageUrl = apartment['imageUrl'] as String?;
     final Uint8List? imageBytes = apartment['imageBytes'] as Uint8List?;
 
+    // Card/thumbnail → open ROOM INFO (primary flow)
+    void openRoomInfo() {
+      final roomId = apartment['id'] as String;
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => Roominfo(roomId: roomId)),
+      );
+    }
+
+    // Small pin icon → open Map (secondary)
+    void openMap() {
+      final roomId = apartment['id'] as String;
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => Gmap(roomId: roomId)),
+      );
+    }
+
+    // Card/thumbnail → open ROOM INFO
     Widget imageWidget;
     if (imageBytes != null) {
-      imageWidget = Image.memory(
-        imageBytes,
-        height: 160,
-        width: double.infinity,
-        fit: BoxFit.cover,
+      imageWidget = GestureDetector(
+        onTap: openRoomInfo,
+        child: Image.memory(
+          imageBytes,
+          height: 160,
+          width: double.infinity,
+          fit: BoxFit.cover,
+        ),
       );
     } else if (imageUrl != null && imageUrl.isNotEmpty) {
-      imageWidget = Image.network(
-        imageUrl,
-        height: 160,
-        width: double.infinity,
-        fit: BoxFit.cover,
+      imageWidget = GestureDetector(
+        onTap: openRoomInfo,
+        child: Image.network(
+          imageUrl,
+          height: 160,
+          width: double.infinity,
+          fit: BoxFit.cover,
+        ),
       );
     } else {
-      imageWidget = Container(
-        height: 160,
-        width: double.infinity,
-        color: Colors.black26,
-        alignment: Alignment.center,
-        child: const Icon(Icons.image_not_supported, color: Colors.white70),
+      imageWidget = GestureDetector(
+        onTap: openRoomInfo,
+        child: Container(
+          height: 160,
+          width: double.infinity,
+          color: Colors.black26,
+          alignment: Alignment.center,
+          child: const Icon(Icons.image_not_supported, color: Colors.white70),
+        ),
       );
     }
 
@@ -540,19 +567,7 @@ class _TimelineState extends State<Timeline> {
     }
 
     return GestureDetector(
-      onTap: () {
-        final roomId = apartment['id'];
-        if (roomId == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('This item has no roomId')),
-          );
-          return;
-        }
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => Roominfo(roomId: roomId as String)),
-        );
-      },
+      onTap: openRoomInfo, // <— main card tap goes to ROOM INFO
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFF2D4C5D),
@@ -633,7 +648,6 @@ class _TimelineState extends State<Timeline> {
                         ),
                         const SizedBox(width: 8),
                       ],
-                      // EDIT button removed
                       ElevatedButton(
                         onPressed: () {
                           showDialog(
@@ -656,7 +670,9 @@ class _TimelineState extends State<Timeline> {
                                         .delete()
                                         .eq('id', apartment['id']);
                                     await _refreshFromSupabase();
-                                    if (mounted) Navigator.of(context).pop();
+                                    if (mounted) {
+                                      Navigator.of(context).pop();
+                                    }
                                   },
                                   child: const Text(
                                     "Delete",
@@ -674,6 +690,15 @@ class _TimelineState extends State<Timeline> {
                         child: const Text("Delete"),
                       ),
                       const Spacer(),
+                      // explicit map button
+                      IconButton(
+                        tooltip: 'Open Map',
+                        onPressed: openMap,
+                        icon: const Icon(
+                          Icons.location_on_outlined,
+                          color: Colors.white70,
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -799,9 +824,7 @@ class _TimelineState extends State<Timeline> {
                 icon = Icons.circle;
                 label = "";
             }
-
             final isSelected = _selectedIndex == index;
-
             return GestureDetector(
               onTap: () => _onNavTap(index),
               child: Padding(

@@ -1,15 +1,19 @@
+// lib/LANDLORD/totalroom.dart
 import 'package:flutter/material.dart';
 import 'package:smart_finder/LANDLORD/CHAT2.dart';
-import 'package:smart_finder/LANDLORD/ROOMAVAIL.dart'; // For vacant rooms
-import 'package:smart_finder/LANDLORD/ROOMNOTAVAIL.dart'; // For occupied rooms
-
 import 'package:smart_finder/LANDLORD/DASHBOARD.dart';
 import 'package:smart_finder/LANDLORD/APARTMENT.dart';
-
 import 'package:smart_finder/LANDLORD/LSETTINGS.dart';
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
 import 'package:smart_finder/LANDLORD/TIMELINE.dart';
 import 'package:smart_finder/LANDLORD/TENANTS.dart';
+
+// services
+import '../services/room_service.dart';
+
+// imports for both room states
+import 'package:smart_finder/LANDLORD/roomavail.dart' as avail;
+import 'package:smart_finder/LANDLORD/roomnotavail.dart' as notavail;
 
 class TotalRoom extends StatefulWidget {
   const TotalRoom({super.key});
@@ -19,278 +23,272 @@ class TotalRoom extends StatefulWidget {
 }
 
 class _TotalRoomState extends State<TotalRoom> {
-  int _selectedIndex = 5; // ✅ Rooms tab selected by default
+  final RoomService _service = RoomService();
+  late final Stream<List<Map<String, dynamic>>> _stream;
+  int _selectedIndex = 5; // Rooms tab
 
-  // Example room data
-  final List<Map<String, dynamic>> rooms = [
-    {"room": "L206", "status": "VACANT"},
-    {"room": "L207", "status": "OCCUPIED", "date": "December 25, 2025"},
-    {"room": "L208", "status": "VACANT"},
-    {"room": "L209", "status": "OCCUPIED", "date": "December 25, 2025"},
-    {"room": "L210", "status": "VACANT"},
-    {"room": "L211", "status": "VACANT"},
-    {"room": "L212", "status": "OCCUPIED", "date": "January 5, 2026"},
-    {"room": "L213", "status": "VACANT"},
-    {"room": "L214", "status": "OCCUPIED", "date": "January 15, 2026"},
-  ];
-
-  int currentPage = 0;
-  final int cardsPerPage = 8; // 👈 8 rooms per page
-  final ScrollController _scrollController = ScrollController();
-
-  // ✅ Navigation handler (copied from ListChat)
-  void _onNavTap(int index) {
-    if (_selectedIndex == index) return;
-
-    setState(() {
-      _selectedIndex = index;
-    });
-
-    if (index == 0) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const Dashboard()),
-      );
-    } else if (index == 1) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const Timeline()),
-      );
-    } else if (index == 2) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const Apartment()),
-      );
-    } else if (index == 3) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const Tenants()),
-      );
-    } else if (index == 4) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ListChat()),
-      );
-    } else if (index == 5) {
-      // Current page → Rooms
-    } else if (index == 6) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LandlordSettings()),
-      );
-    } else if (index == 7) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (context) => const Login()),
-        (route) => false,
-      );
-    }
+  @override
+  void initState() {
+    super.initState();
+    _stream = _service.streamMyRooms();
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _service.dispose();
     super.dispose();
   }
 
+  // ---------- NAV BAR ----------
+  void _onNavTap(int index) {
+    if (_selectedIndex == index) return;
+    setState(() => _selectedIndex = index);
+
+    Widget? destination;
+    switch (index) {
+      case 0:
+        destination = const Dashboard();
+        break;
+      case 1:
+        destination = const Timeline();
+        break;
+      case 2:
+        destination = const Apartment();
+        break;
+      case 3:
+        destination = const Tenants();
+        break;
+      case 4:
+        destination = const ListChat();
+        break;
+      case 6:
+        destination = const LandlordSettings();
+        break;
+      case 7:
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const Login()),
+          (r) => false,
+        );
+        return;
+    }
+
+    if (destination != null) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => destination!),
+      );
+    }
+  }
+
+  // ---------- UTILITIES ----------
+  String _availability(Map<String, dynamic> r) {
+    final a = (r['availability_status'] ?? '').toString().toLowerCase();
+    if (a == 'available' || a == 'not_available') return a;
+    final s = (r['status'] ?? '').toString().toLowerCase();
+    return s == 'available' ? 'available' : 'not_available';
+  }
+
+  void _openRoom(Map<String, dynamic> r) {
+    final bool isAvail = _availability(r) == 'available';
+
+    // Force a Map<String, dynamic> (in case r has dynamic keys/values)
+    final Map<String, dynamic> room = Map<String, dynamic>.from(r);
+
+    // Make the ternary produce a Widget
+    final Widget page = isAvail
+        ? avail.RoomAvailable(roomData: room)
+        : notavail.RoomNotAvailable(roomData: room);
+
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
+
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
-    int totalPages = (rooms.length / cardsPerPage).ceil();
-    int startIndex = currentPage * cardsPerPage;
-    int endIndex = (startIndex + cardsPerPage).clamp(0, rooms.length);
-
     return Scaffold(
-      backgroundColor: const Color(0xFF003B5C),
+      backgroundColor: const Color(0xFFE6E6E6),
       appBar: AppBar(
         backgroundColor: const Color(0xFF003B5C),
-        elevation: 0,
-        automaticallyImplyLeading: false, // ✅ remove back button
+        foregroundColor: Colors.white,
         centerTitle: true,
+        elevation: 0,
         title: const Text(
-          "TOTAL ROOMS",
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 25,
-            fontWeight: FontWeight.bold,
-          ),
+          'MY ROOMS',
+          style: TextStyle(fontSize: 25, fontWeight: FontWeight.bold),
         ),
       ),
-      body: ListView(
-        controller: _scrollController,
-        children: [
-          // 👇 Grid of cards
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(10.0),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 15,
-              mainAxisSpacing: 20,
-            ),
-            itemCount: endIndex - startIndex,
-            itemBuilder: (context, index) {
-              final room = rooms[startIndex + index];
-              final isVacant = room['status'] == "VACANT";
-              final hasDate = room.containsKey("date");
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: _stream,
+        initialData: const [],
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Could not load rooms:\n${snap.error}',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+
+          final rooms = snap.data ?? const [];
+          if (rooms.isEmpty) return const _EmptyListState();
+
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: rooms.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, i) {
+              final r = rooms[i];
+              final title = (r['apartment_name'] ?? 'SmartFinder Apartment')
+                  .toString();
+              final location = (r['location'] ?? '').toString();
+              final monthly = r['monthly_payment'];
+              final isAvail = _availability(r) == 'available';
 
               return Container(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF7B8D93),
+                  color: Colors.white,
+                  border: Border.all(color: Colors.black, width: 1),
                   borderRadius: BorderRadius.circular(12),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 6,
-                      offset: const Offset(2, 3),
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
                     ),
                   ],
                 ),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Stack(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      // ---------- TITLE + STATUS ----------
+                      Row(
                         children: [
-                          // Status dot
-                          Positioned(
-                            top: 8,
-                            left: 8,
-                            child: Container(
-                              width: 14,
-                              height: 14,
-                              decoration: BoxDecoration(
-                                color: isVacant
-                                    ? const Color.fromARGB(255, 62, 255, 69)
-                                    : Colors.red,
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.3),
-                                    blurRadius: 3,
-                                    offset: const Offset(1, 1),
-                                  ),
-                                ],
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ),
-
-                          // Date occupied
-                          if (hasDate)
-                            Positioned(
-                              top: 8,
-                              left: 0,
-                              right: 0,
-                              child: Text(
-                                "Occupied: ${room['date']}",
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
                             ),
-
-                          // Main icon + text
-                          Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(
-                                  Icons.home_rounded,
-                                  size: 70,
-                                  color: Colors.white,
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  room['room'],
-                                  style: const TextStyle(
-                                    fontSize: 26,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  isVacant ? "VACANT" : "OCCUPIED",
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 1,
-                                    color: isVacant
-                                        ? Colors.greenAccent
-                                        : Colors.redAccent,
-                                  ),
-                                ),
-                              ],
+                            decoration: BoxDecoration(
+                              color: isAvail
+                                  ? Colors.green.shade100
+                                  : Colors.grey.shade300,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.black12),
+                            ),
+                            child: Text(
+                              isAvail ? 'available' : 'not_available',
+                              style: TextStyle(
+                                color: isAvail
+                                    ? Colors.green.shade800
+                                    : Colors.grey.shade800,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ),
 
-                    // More info bar
-                    Container(
-                      height: 38,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.only(
-                          bottomLeft: Radius.circular(12),
-                          bottomRight: Radius.circular(12),
-                        ),
-                      ),
-                      child: InkWell(
-                        onTap: () {
-                          if (isVacant) {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => RoomAvailable(roomData: room),
+                      const SizedBox(height: 8),
+
+                      // ---------- LOCATION + MONTHLY ----------
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.location_on,
+                            size: 18,
+                            color: Colors.black54,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              location,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Colors.black87,
                               ),
-                            );
-                          } else {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    RoomNotAvailable(roomData: room),
-                              ),
-                            );
-                          }
-                        },
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(
-                              Icons.info_outline,
-                              size: 18,
-                              color: Colors.blue,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            SizedBox(width: 6),
-                            Text(
-                              "More Info",
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.black,
+                          ),
+                          const SizedBox(width: 10),
+                          if (monthly != null)
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.price_change,
+                                  size: 18,
+                                  color: Colors.black54,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '₱$monthly',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 12),
+
+                      // ---------- BUTTON ----------
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(
+                                  color: Colors.black,
+                                  width: 1,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                              ),
+                              onPressed: () => _openRoom(r),
+                              child: const Text(
+                                'More Info',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             },
-          ),
-
-          // 👇 Pagination will now scroll with the grid and appear after last card
-          _buildPagination(totalPages),
-        ],
+          );
+        },
       ),
 
-      // ✅ Replaced BottomNavigationBar with custom scrollable nav from ListChat
+      // ---------- BOTTOM NAV ----------
       bottomNavigationBar: Container(
         color: Colors.white,
         height: 60,
@@ -303,43 +301,42 @@ class _TotalRoomState extends State<TotalRoom> {
               switch (index) {
                 case 0:
                   icon = Icons.dashboard;
-                  label = "Dashboard";
+                  label = 'Dashboard';
                   break;
                 case 1:
                   icon = Icons.view_timeline_outlined;
-                  label = "Timeline";
+                  label = 'Timeline';
                   break;
                 case 2:
                   icon = Icons.apartment;
-                  label = "Apartment";
+                  label = 'Apartment';
                   break;
                 case 3:
                   icon = Icons.group;
-                  label = "Tenants";
+                  label = 'Tenants';
                   break;
                 case 4:
                   icon = Icons.message;
-                  label = "Message";
+                  label = 'Message';
                   break;
                 case 5:
                   icon = Icons.door_front_door;
-                  label = "Rooms";
+                  label = 'Rooms';
                   break;
                 case 6:
                   icon = Icons.settings;
-                  label = "Settings";
+                  label = 'Settings';
                   break;
                 case 7:
                   icon = Icons.logout;
-                  label = "Logout";
+                  label = 'Logout';
                   break;
                 default:
                   icon = Icons.circle;
-                  label = "";
+                  label = '';
               }
 
-              bool isSelected = _selectedIndex == index;
-
+              final isSelected = _selectedIndex == index;
               return GestureDetector(
                 onTap: () => _onNavTap(index),
                 child: Padding(
@@ -378,85 +375,28 @@ class _TotalRoomState extends State<TotalRoom> {
       ),
     );
   }
+}
 
-  Widget _buildPagination(int totalPages) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 20.0),
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        spacing: 12,
-        runSpacing: 10,
-        children: [
-          IconButton(
-            onPressed: currentPage > 0
-                ? () {
-                    setState(() {
-                      currentPage--;
-                      _scrollController.jumpTo(0);
-                    });
-                  }
-                : null,
-            icon: const Icon(Icons.chevron_left),
-            iconSize: 30,
-            color: Colors.white,
-          ),
-          ...List.generate(totalPages, (index) {
-            bool isSelected = index == currentPage;
-            return GestureDetector(
-              onTap: () {
-                setState(() {
-                  currentPage = index;
-                  _scrollController.jumpTo(0);
-                });
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  color: isSelected
-                      ? const Color.fromARGB(255, 214, 214, 214)
-                      : Colors.white10,
-                  border: isSelected
-                      ? Border.all(color: Colors.white, width: 2)
-                      : null,
-                  boxShadow: isSelected
-                      ? [
-                          const BoxShadow(
-                            color: Colors.black26,
-                            blurRadius: 6,
-                            offset: Offset(0, 2),
-                          ),
-                        ]
-                      : [],
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  "${index + 1}",
-                  style: TextStyle(
-                    color: isSelected ? Colors.black : Colors.white70,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            );
-          }),
-          IconButton(
-            onPressed: currentPage < totalPages - 1
-                ? () {
-                    setState(() {
-                      currentPage++;
-                      _scrollController.jumpTo(0);
-                    });
-                  }
-                : null,
-            icon: const Icon(Icons.chevron_right),
-            iconSize: 30,
-            color: Colors.white,
-          ),
-        ],
+// ---------- EMPTY STATE ----------
+class _EmptyListState extends StatelessWidget {
+  const _EmptyListState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: Colors.black),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Text(
+          'No rooms yet.\nCreate a room in AddRoom to see it here.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 14),
+        ),
       ),
     );
   }

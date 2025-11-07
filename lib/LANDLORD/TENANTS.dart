@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
-import 'tenantinfo.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+// ✅ Ensure we import the right class that accepts `tenantData`
+import 'tenantinfo.dart' show Tenantinfo;
+
 import 'package:smart_finder/LANDLORD/DASHBOARD.dart';
 import 'package:smart_finder/LANDLORD/APARTMENT.dart';
 import 'package:smart_finder/LANDLORD/TOTALROOM.dart';
@@ -16,45 +20,31 @@ class Tenants extends StatefulWidget {
 }
 
 class _TenantsState extends State<Tenants> {
-  final List<Map<String, String>> tenants = [
-    {
-      'name': 'Anthony Gandeza',
-      'email': 'anthony@example.com',
-      'image': 'assets/images/totski.png',
-    },
-    {
-      'name': 'Josil Joy',
-      'email': 'josil@example.com',
-      'image': 'assets/images/josil.png',
-    },
-    {
-      'name': 'Mykel Josh',
-      'email': 'mykel@example.com',
-      'image': 'assets/images/mykel.png',
-    },
-    {
-      'name': 'Nurhone Fatima',
-      'email': 'nurhone@example.com',
-      'image': 'assets/images/nurhone.png',
-    },
-    {
-      'name': 'Early Justin',
-      'email': 'early@example.com',
-      'image': 'assets/images/early.png',
-    },
-  ];
+  final _sb = Supabase.instance.client;
 
   String searchQuery = '';
   int? hoveredIndex;
+  int _selectedIndex = 3; // Tenants tab selected
 
-  int _selectedIndex = 3; // ✅ Tenants tab is selected by default
+  /// Stream all, then filter by landlord_id + status in Dart.
+  Stream<List<Map<String, dynamic>>> _streamTenantsSafe() {
+    final me = _sb.auth.currentUser?.id;
+    if (me == null) return const Stream.empty();
+
+    return _sb.from('room_tenants').stream(primaryKey: ['id']).map((rows) {
+      final list = List<Map<String, dynamic>>.from(rows);
+      return list.where((t) {
+        final status = (t['status'] ?? '').toString().toLowerCase();
+        final ll = (t['landlord_id'] ?? '').toString();
+        return status == 'active' && ll == me;
+      }).toList();
+    });
+  }
 
   void _onNavTap(int index) {
     if (_selectedIndex == index) return;
 
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
 
     if (index == 0) {
       Navigator.pushReplacement(
@@ -72,7 +62,7 @@ class _TenantsState extends State<Tenants> {
         MaterialPageRoute(builder: (context) => const Apartment()),
       );
     } else if (index == 3) {
-      // Current page → Tenants
+      // stay
     } else if (index == 4) {
       Navigator.pushReplacement(
         context,
@@ -99,13 +89,6 @@ class _TenantsState extends State<Tenants> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredTenants = tenants
-        .where(
-          (tenant) =>
-              tenant['name']!.toLowerCase().contains(searchQuery.toLowerCase()),
-        )
-        .toList();
-
     return Scaffold(
       backgroundColor: const Color(0xFFE5E5E5),
       appBar: AppBar(
@@ -126,7 +109,7 @@ class _TenantsState extends State<Tenants> {
         padding: const EdgeInsets.all(12.0),
         child: Column(
           children: [
-            // 🔹 SEARCH BAR
+            // Search
             Container(
               decoration: BoxDecoration(
                 color: Colors.white,
@@ -141,11 +124,7 @@ class _TenantsState extends State<Tenants> {
                 ],
               ),
               child: TextField(
-                onChanged: (value) {
-                  setState(() {
-                    searchQuery = value;
-                  });
-                },
+                onChanged: (value) => setState(() => searchQuery = value),
                 decoration: InputDecoration(
                   hintText: "Search Tenant",
                   hintStyle: TextStyle(color: Colors.grey.shade500),
@@ -158,83 +137,106 @@ class _TenantsState extends State<Tenants> {
 
             const SizedBox(height: 20),
 
-            // TENANT LIST
+            // Stream list
             Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.all(8),
-                itemCount: filteredTenants.length,
-                itemBuilder: (context, index) {
-                  final tenant = filteredTenants[index];
-                  return MouseRegion(
-                    onEnter: (_) {
-                      setState(() {
-                        hoveredIndex = index;
-                      });
-                    },
-                    onExit: (_) {
-                      setState(() {
-                        hoveredIndex = null;
-                      });
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.easeInOut,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: hoveredIndex == index
-                            ? [
-                                BoxShadow(
-                                  color: const Color.fromARGB(
-                                    66,
-                                    255,
-                                    255,
-                                    255,
+              child: StreamBuilder<List<Map<String, dynamic>>>(
+                stream: _streamTenantsSafe(),
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snap.hasError) {
+                    return Center(child: Text('Error: ${snap.error}'));
+                  }
+                  final rows = snap.data ?? const [];
+                  final filtered = rows.where((t) {
+                    final s = searchQuery.toLowerCase();
+                    final name = (t['full_name'] ?? '')
+                        .toString()
+                        .toLowerCase();
+                    final email = (t['email'] ?? '').toString().toLowerCase();
+                    return name.contains(s) || email.contains(s);
+                  }).toList();
+
+                  if (filtered.isEmpty) {
+                    return const Center(child: Text('No tenants found.'));
+                  }
+
+                  return ListView.builder(
+                    padding: const EdgeInsets.all(8),
+                    itemCount: filtered.length,
+                    itemBuilder: (context, index) {
+                      final t = filtered[index];
+                      final name = (t['full_name'] ?? 'Unknown').toString();
+                      final email = (t['email'] ?? '—').toString();
+
+                      return MouseRegion(
+                        onEnter: (_) => setState(() => hoveredIndex = index),
+                        onExit: (_) => setState(() => hoveredIndex = null),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 100),
+                          curve: Curves.easeInOut,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: hoveredIndex == index
+                                ? [
+                                    BoxShadow(
+                                      color: const Color.fromARGB(
+                                        66,
+                                        255,
+                                        255,
+                                        255,
+                                      ),
+                                      blurRadius: 8,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ]
+                                : [],
+                          ),
+                          child: Card(
+                            color: hoveredIndex == index
+                                ? Colors.blue.shade50
+                                : Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            elevation: hoveredIndex == index ? 6 : 3,
+                            margin: const EdgeInsets.symmetric(vertical: 6),
+                            child: ListTile(
+                              onTap: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => Tenantinfo(
+                                      tenantData: Map<String, dynamic>.from(t),
+                                    ),
                                   ),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 4),
+                                );
+                              },
+                              leading: CircleAvatar(
+                                radius: 24,
+                                backgroundColor: Colors.grey[300],
+                                child: Text(
+                                  _initials(name),
+                                  style: const TextStyle(
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
-                              ]
-                            : [],
-                      ),
-                      child: Card(
-                        color: hoveredIndex == index
-                            ? Colors.blue.shade50
-                            : Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        elevation: hoveredIndex == index ? 6 : 3,
-                        margin: const EdgeInsets.symmetric(vertical: 6),
-                        child: ListTile(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => const Tenantinfo(),
                               ),
-                            );
-                          },
-                          leading: CircleAvatar(
-                            radius: 24,
-                            backgroundColor: Colors.grey[300],
-                            child: ClipOval(
-                              child: Image.asset(
-                                tenant['image']!,
-                                fit: BoxFit.cover,
-                                width: 95,
-                                height: 95,
+                              title: Text(
+                                name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
+                              subtitle: Text(email),
+                              trailing: const Icon(Icons.more_horiz),
                             ),
                           ),
-                          title: Text(
-                            tenant['name']!,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Text(tenant['email']!),
-                          trailing: const Icon(Icons.more_horiz),
                         ),
-                      ),
-                    ),
+                      );
+                    },
                   );
                 },
               ),
@@ -290,7 +292,7 @@ class _TenantsState extends State<Tenants> {
                   label = "";
               }
 
-              bool isSelected = _selectedIndex == index;
+              final isSelected = _selectedIndex == index;
 
               return GestureDetector(
                 onTap: () => _onNavTap(index),
@@ -329,5 +331,15 @@ class _TenantsState extends State<Tenants> {
         ),
       ),
     );
+  }
+
+  String _initials(String name) {
+    final parts = name.trim().split(RegExp(r'\s+'));
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) {
+      final s = parts.first;
+      return (s.length >= 2 ? s.substring(0, 2) : s).toUpperCase();
+    }
+    return (parts.first[0] + parts.last[0]).toUpperCase();
   }
 }

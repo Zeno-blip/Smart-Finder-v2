@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:smart_finder/TENANT/TGMAP.dart'; // <-- already present (keep it)
-import 'package:smart_finder/LANDLORD/CHAT2.dart';
-import 'package:smart_finder/LANDLORD/DASHBOARD.dart';
-import 'package:smart_finder/LANDLORD/LSETTINGS.dart';
-import 'GMAP.dart';
+
+import 'package:smart_finder/LANDLORD/ROOMINFO.dart' show Roominfo;
+import 'package:smart_finder/TENANT/TGMAP.dart'; // if you need tenant map elsewhere
+import 'GMAP.dart'; // landlord map
 import 'TIMELINE.dart';
 import 'TENANTS.dart';
 import 'TOTALROOM.dart';
 import 'LOGIN.dart';
+import 'DASHBOARD.dart';
+import 'CHAT2.dart';
+import 'LSETTINGS.dart';
 
 class Apartment extends StatefulWidget {
   const Apartment({super.key});
@@ -25,16 +27,22 @@ class _ApartmentState extends State<Apartment> {
   int _unread = 0;
   String? get _userId => supabase.auth.currentUser?.id;
 
+  // ---------- Data: ALL ROOMS ----------
+  List<_RoomCard> _rooms = [];
+  bool _loadingRooms = true;
+  String? _roomError;
+
   // ---------- Paging / UI state ----------
   int currentPage = 0;
   final int cardsPerPage = 10;
   final ScrollController _scrollController = ScrollController();
   int _selectedIndex = 2; // Apartment tab selected by default
 
-  List<bool> favoriteStatus = List.generate(30, (_) => false);
-  List<bool> bookmarkStatus = List.generate(30, (_) => false);
+  // using sets for favorite/bookmark keyed by roomId
+  final Set<String> _fav = {};
+  final Set<String> _bm = {};
 
-  // ---------- Filters ----------
+  // ---------- Filters (kept) ----------
   Map<String, String> preferences = {
     "Pet-Friendly": "Yes",
     "Open to all": "Yes",
@@ -93,9 +101,7 @@ class _ApartmentState extends State<Apartment> {
         table: 'notifications',
         callback: (payload) {
           final rec = payload.newRecord as Map<String, dynamic>;
-          // client-side filter so we only react to my notifications
           if (rec['user_id'] != _userId) return;
-
           setState(() {
             _notifs.insert(0, rec);
             if (((rec['is_read'] as bool?) ?? false) == false) {
@@ -122,7 +128,6 @@ class _ApartmentState extends State<Apartment> {
   }
 
   Future<void> _openNotification(Map<String, dynamic> n) async {
-    // mark this one as read if needed
     if ((n['is_read'] as bool?) == false) {
       await supabase
           .from('notifications')
@@ -134,7 +139,6 @@ class _ApartmentState extends State<Apartment> {
         if (_unread > 0) _unread -= 1;
       });
     }
-    // navigate if it has a room_id
     final roomId = (n['room_id'] as String?)?.trim();
     if (roomId != null && roomId.isNotEmpty && mounted) {
       Navigator.push(
@@ -227,7 +231,7 @@ class _ApartmentState extends State<Apartment> {
   }
 
   Future<void> _refreshPage() async {
-    await _loadNotifications();
+    await Future.wait([_loadNotifications(), _loadAllRooms()]);
     if (!mounted) return;
     setState(() {});
     ScaffoldMessenger.of(
@@ -235,49 +239,143 @@ class _ApartmentState extends State<Apartment> {
     ).showSnackBar(const SnackBar(content: Text('Refreshed')));
   }
 
+  // ---------- Load ALL rooms (all landlords) ----------
+  Future<void> _loadAllRooms() async {
+    setState(() {
+      _loadingRooms = true;
+      _roomError = null;
+    });
+
+    try {
+      // 1) base rooms (adjust selected columns to your schema)
+      final rows = await supabase
+          .from('rooms')
+          .select(
+            'id, apartment_name, location, monthly_payment, advance_deposit, landlord_id, created_at',
+          )
+          .order('created_at', ascending: false);
+
+      final rooms = List<Map<String, dynamic>>.from(rows as List);
+
+      if (rooms.isEmpty) {
+        setState(() {
+          _rooms = [];
+          _loadingRooms = false;
+        });
+        return;
+      }
+
+      // 2) fetch first photo per room
+      final ids = rooms.map((r) => r['id'].toString()).toList();
+      final imgs = await supabase
+          .from('room_images')
+          .select('room_id, image_url, sort_order, storage_path')
+          .inFilter('room_id', ids)
+          .order('sort_order', ascending: true);
+
+      final List<Map<String, dynamic>> imgRows =
+          List<Map<String, dynamic>>.from(imgs as List);
+
+      // pick first image per room (by lowest sort_order)
+      final Map<String, String> thumbByRoom = {};
+      for (final r in imgRows) {
+        final rid = (r['room_id'] ?? '').toString();
+        if (rid.isEmpty) continue;
+        if (thumbByRoom.containsKey(rid)) continue; // already have the first
+        final url = (r['image_url'] as String?)?.trim();
+        if (url != null && url.isNotEmpty) {
+          thumbByRoom[rid] = url;
+        } else if (r['storage_path'] != null) {
+          final u = supabase.storage
+              .from('room-images')
+              .getPublicUrl(r['storage_path'] as String);
+          if (u.isNotEmpty) thumbByRoom[rid] = u;
+        }
+      }
+
+      // 3) map to card models
+      final list = <_RoomCard>[];
+      for (final r in rooms) {
+        final id = (r['id'] ?? '').toString();
+        if (id.isEmpty) continue;
+
+        final title = (r['apartment_name'] ?? 'Apartment').toString();
+        final address = (r['location'] ?? '—').toString();
+        final monthly = r['monthly_payment'];
+        final priceText = (monthly is num)
+            ? '₱ ${monthly.toStringAsFixed(2)} / Month'
+            : '₱ —';
+
+        list.add(
+          _RoomCard(
+            roomId: id,
+            title: title,
+            address: address,
+            price: priceText,
+            imageUrl: thumbByRoom[id],
+          ),
+        );
+      }
+
+      setState(() {
+        _rooms = list;
+        // keep currentPage in range when dataset changes
+        final totalPages = (_rooms.length / cardsPerPage).ceil().clamp(
+          1,
+          1 << 30,
+        );
+        if (currentPage > totalPages - 1)
+          currentPage = (totalPages - 1).clamp(0, totalPages - 1);
+        _loadingRooms = false;
+      });
+    } catch (e) {
+      setState(() {
+        _roomError = '$e';
+        _loadingRooms = false;
+      });
+    }
+  }
+
   // ---------- Nav ----------
   void _onNavTap(int index) {
     if (_selectedIndex == index) return;
-
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
 
     if (index == 0) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Dashboard()),
+        MaterialPageRoute(builder: (_) => const Dashboard()),
       );
     } else if (index == 1) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Timeline()),
+        MaterialPageRoute(builder: (_) => const Timeline()),
       );
     } else if (index == 3) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Tenants()),
+        MaterialPageRoute(builder: (_) => const Tenants()),
       );
     } else if (index == 4) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const ListChat()),
+        MaterialPageRoute(builder: (_) => const ListChat()),
       );
     } else if (index == 5) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const TotalRoom()),
+        MaterialPageRoute(builder: (_) => const TotalRoom()),
       );
     } else if (index == 6) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const LandlordSettings()),
+        MaterialPageRoute(builder: (_) => const LandlordSettings()),
       );
     } else if (index == 7) {
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const Login()),
-        (route) => false,
+        MaterialPageRoute(builder: (_) => const Login()),
+        (r) => false,
       );
     }
   }
@@ -287,6 +385,7 @@ class _ApartmentState extends State<Apartment> {
     super.initState();
     _loadNotifications();
     _subscribeNotifications();
+    _loadAllRooms();
   }
 
   @override
@@ -327,9 +426,8 @@ class _ApartmentState extends State<Apartment> {
                   ),
                   const SizedBox(height: 20),
                   ...preferences.entries.map((entry) {
-                    String key = entry.key;
-                    String value = entry.value;
-
+                    final key = entry.key;
+                    final value = entry.value;
                     return Container(
                       margin: const EdgeInsets.only(bottom: 15),
                       padding: const EdgeInsets.symmetric(
@@ -408,6 +506,7 @@ class _ApartmentState extends State<Apartment> {
                       ),
                       onPressed: () {
                         Navigator.pop(context);
+                        // TODO: apply real filters to _rooms if you store flags on rooms
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
                             content: Text("Filters applied successfully!"),
@@ -437,9 +536,10 @@ class _ApartmentState extends State<Apartment> {
 
   @override
   Widget build(BuildContext context) {
-    int totalPages = (favoriteStatus.length / cardsPerPage).ceil();
-    int startIndex = currentPage * cardsPerPage;
-    int endIndex = (startIndex + cardsPerPage).clamp(0, favoriteStatus.length);
+    final total = _rooms.length;
+    final totalPages = (total / cardsPerPage).ceil().clamp(1, 1 << 30);
+    final startIndex = (currentPage * cardsPerPage).clamp(0, total);
+    final endIndex = (startIndex + cardsPerPage).clamp(0, total);
 
     return Scaffold(
       backgroundColor: const Color(0xFF04354B),
@@ -457,13 +557,11 @@ class _ApartmentState extends State<Apartment> {
           ),
         ),
         actions: [
-          // Refresh
           IconButton(
             tooltip: 'Refresh',
             onPressed: _refreshPage,
             icon: const Icon(Icons.refresh, color: Colors.white),
           ),
-          // Notifications
           IconButton(
             tooltip: 'Notifications',
             onPressed: _openNotifications,
@@ -515,17 +613,33 @@ class _ApartmentState extends State<Apartment> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Row(
+                    child: Row(
                       children: [
                         Expanded(
                           child: TextField(
-                            decoration: InputDecoration(
-                              hintText: "Search Tenant",
+                            decoration: const InputDecoration(
+                              hintText: "Search Apartment or Address",
                               border: InputBorder.none,
                             ),
+                            onChanged: (q) {
+                              // simple local filter (title or address contains)
+                              q = q.trim().toLowerCase();
+                              if (q.isEmpty) {
+                                _loadAllRooms();
+                                return;
+                              }
+                              final filtered = _rooms.where((r) {
+                                return r.title.toLowerCase().contains(q) ||
+                                    r.address.toLowerCase().contains(q);
+                              }).toList();
+                              setState(() {
+                                _rooms = filtered;
+                                currentPage = 0;
+                              });
+                            },
                           ),
                         ),
-                        Icon(Icons.search, color: Colors.black54),
+                        const Icon(Icons.search, color: Colors.black54),
                       ],
                     ),
                   ),
@@ -547,139 +661,213 @@ class _ApartmentState extends State<Apartment> {
             ),
             const SizedBox(height: 20),
 
-            // Cards with pagination
+            // Cards with pagination / loading / error
             Expanded(
-              child: ListView.builder(
-                controller: _scrollController,
-                itemCount: (endIndex - startIndex) + 1,
-                itemBuilder: (context, index) {
-                  if (index < endIndex - startIndex) {
-                    final cardIndex = startIndex + index;
-                    final demoRoomId =
-                        'demo-room-${cardIndex + 1}'; // sample id
-
-                    return ApartmentCard(
-                      roomId: demoRoomId,
-                      isFavorited: favoriteStatus[cardIndex],
-                      isBookmarked: bookmarkStatus[cardIndex],
-                      onFavoriteToggle: () {
-                        setState(
-                          () => favoriteStatus[cardIndex] =
-                              !favoriteStatus[cardIndex],
-                        );
-                      },
-                      onBookmarkPressed: () {
-                        setState(
-                          () => bookmarkStatus[cardIndex] =
-                              !bookmarkStatus[cardIndex],
-                        );
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              bookmarkStatus[cardIndex]
-                                  ? 'Apartment bookmarked!'
-                                  : 'Bookmark removed.',
+              child: _loadingRooms
+                  ? const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    )
+                  : (_roomError != null
+                        ? Center(
+                            child: Text(
+                              'Failed to load rooms:\n$_roomError',
+                              style: const TextStyle(color: Colors.white70),
+                              textAlign: TextAlign.center,
                             ),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                      },
-                    );
-                  } else {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 20.0),
-                      child: Center(
-                        child: Wrap(
-                          alignment: WrapAlignment.center,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          spacing: 12,
-                          runSpacing: 10,
-                          children: [
-                            IconButton(
-                              onPressed: currentPage > 0
-                                  ? () {
-                                      setState(() {
-                                        currentPage--;
-                                        _scrollController.jumpTo(0);
-                                      });
-                                    }
-                                  : null,
-                              icon: const Icon(Icons.chevron_left),
-                              iconSize: 30,
-                              color: Colors.white,
-                            ),
-                            ...List.generate(totalPages, (index) {
-                              bool isSelected = index == currentPage;
-                              return GestureDetector(
-                                onTap: () {
-                                  setState(() {
-                                    currentPage = index;
-                                    _scrollController.jumpTo(0);
-                                  });
-                                },
-                                child: AnimatedContainer(
-                                  duration: const Duration(milliseconds: 300),
-                                  width: 40,
-                                  height: 40,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    color: isSelected
-                                        ? const Color.fromARGB(
-                                            255,
-                                            214,
-                                            214,
-                                            214,
-                                          )
-                                        : Colors.white10,
-                                    border: isSelected
-                                        ? Border.all(
-                                            color: Colors.white,
-                                            width: 2,
-                                          )
-                                        : null,
-                                    boxShadow: isSelected
-                                        ? [
-                                            const BoxShadow(
-                                              color: Colors.black26,
-                                              blurRadius: 6,
-                                              offset: Offset(0, 2),
-                                            ),
-                                          ]
-                                        : [],
-                                  ),
-                                  alignment: Alignment.center,
+                          )
+                        : (total == 0
+                              ? const Center(
                                   child: Text(
-                                    "${index + 1}",
-                                    style: TextStyle(
-                                      color: isSelected
-                                          ? Colors.black
-                                          : Colors.white70,
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                    'No rooms found.',
+                                    style: TextStyle(color: Colors.white70),
                                   ),
-                                ),
-                              );
-                            }),
-                            IconButton(
-                              onPressed: currentPage < totalPages - 1
-                                  ? () {
-                                      setState(() {
-                                        currentPage++;
-                                        _scrollController.jumpTo(0);
-                                      });
+                                )
+                              : ListView.builder(
+                                  controller: _scrollController,
+                                  itemCount: (endIndex - startIndex) + 1,
+                                  itemBuilder: (context, index) {
+                                    if (index < endIndex - startIndex) {
+                                      final card = _rooms[startIndex + index];
+                                      final isFav = _fav.contains(card.roomId);
+                                      final isBm = _bm.contains(card.roomId);
+
+                                      return ApartmentCard(
+                                        data: card,
+                                        isFavorited: isFav,
+                                        isBookmarked: isBm,
+                                        onFavoriteToggle: () {
+                                          setState(() {
+                                            if (isFav) {
+                                              _fav.remove(card.roomId);
+                                            } else {
+                                              _fav.add(card.roomId);
+                                            }
+                                          });
+                                        },
+                                        onBookmarkPressed: () {
+                                          setState(() {
+                                            if (isBm) {
+                                              _bm.remove(card.roomId);
+                                            } else {
+                                              _bm.add(card.roomId);
+                                            }
+                                          });
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                isBm
+                                                    ? 'Bookmark removed.'
+                                                    : 'Apartment bookmarked!',
+                                              ),
+                                              duration: const Duration(
+                                                seconds: 2,
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                        onOpenMap: () {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  Gmap(roomId: card.roomId),
+                                            ),
+                                          );
+                                        },
+                                        onOpenInfo: () {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  Roominfo(roomId: card.roomId),
+                                            ),
+                                          );
+                                        },
+                                      );
+                                    } else {
+                                      // pager row
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 20.0,
+                                        ),
+                                        child: Center(
+                                          child: Wrap(
+                                            alignment: WrapAlignment.center,
+                                            crossAxisAlignment:
+                                                WrapCrossAlignment.center,
+                                            spacing: 12,
+                                            runSpacing: 10,
+                                            children: [
+                                              IconButton(
+                                                onPressed: currentPage > 0
+                                                    ? () {
+                                                        setState(() {
+                                                          currentPage--;
+                                                          _scrollController
+                                                              .jumpTo(0);
+                                                        });
+                                                      }
+                                                    : null,
+                                                icon: const Icon(
+                                                  Icons.chevron_left,
+                                                ),
+                                                iconSize: 30,
+                                                color: Colors.white,
+                                              ),
+                                              ...List.generate(totalPages, (
+                                                index,
+                                              ) {
+                                                final isSelected =
+                                                    index == currentPage;
+                                                return GestureDetector(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      currentPage = index;
+                                                      _scrollController.jumpTo(
+                                                        0,
+                                                      );
+                                                    });
+                                                  },
+                                                  child: AnimatedContainer(
+                                                    duration: const Duration(
+                                                      milliseconds: 300,
+                                                    ),
+                                                    width: 40,
+                                                    height: 40,
+                                                    decoration: BoxDecoration(
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
+                                                      color: isSelected
+                                                          ? const Color.fromARGB(
+                                                              255,
+                                                              214,
+                                                              214,
+                                                              214,
+                                                            )
+                                                          : Colors.white10,
+                                                      border: isSelected
+                                                          ? Border.all(
+                                                              color:
+                                                                  Colors.white,
+                                                              width: 2,
+                                                            )
+                                                          : null,
+                                                      boxShadow: isSelected
+                                                          ? [
+                                                              const BoxShadow(
+                                                                color: Colors
+                                                                    .black26,
+                                                                blurRadius: 6,
+                                                                offset: Offset(
+                                                                  0,
+                                                                  2,
+                                                                ),
+                                                              ),
+                                                            ]
+                                                          : [],
+                                                    ),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      "${index + 1}",
+                                                      style: TextStyle(
+                                                        color: isSelected
+                                                            ? Colors.black
+                                                            : Colors.white70,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                );
+                                              }),
+                                              IconButton(
+                                                onPressed:
+                                                    currentPage < totalPages - 1
+                                                    ? () {
+                                                        setState(() {
+                                                          currentPage++;
+                                                          _scrollController
+                                                              .jumpTo(0);
+                                                        });
+                                                      }
+                                                    : null,
+                                                icon: const Icon(
+                                                  Icons.chevron_right,
+                                                ),
+                                                iconSize: 30,
+                                                color: Colors.white,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
                                     }
-                                  : null,
-                              icon: const Icon(Icons.chevron_right),
-                              iconSize: 30,
-                              color: Colors.white,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }
-                },
-              ),
+                                  },
+                                ))),
             ),
           ],
         ),
@@ -733,7 +921,7 @@ class _ApartmentState extends State<Apartment> {
                   label = "";
               }
 
-              bool isSelected = _selectedIndex == index;
+              final isSelected = _selectedIndex == index;
 
               return GestureDetector(
                 onTap: () => _onNavTap(index),
@@ -775,32 +963,48 @@ class _ApartmentState extends State<Apartment> {
   }
 }
 
-class ApartmentCard extends StatelessWidget {
+/* --------------------------- MODELS + CARD --------------------------- */
+
+class _RoomCard {
   final String roomId;
+  final String title;
+  final String address;
+  final String price;
+  final String? imageUrl;
+
+  _RoomCard({
+    required this.roomId,
+    required this.title,
+    required this.address,
+    required this.price,
+    this.imageUrl,
+  });
+}
+
+class ApartmentCard extends StatelessWidget {
+  final _RoomCard data;
   final bool isFavorited;
   final bool isBookmarked;
   final VoidCallback onFavoriteToggle;
   final VoidCallback onBookmarkPressed;
+  final VoidCallback onOpenMap;
+  final VoidCallback onOpenInfo;
 
   const ApartmentCard({
     super.key,
-    required this.roomId,
+    required this.data,
     required this.isFavorited,
     required this.isBookmarked,
     required this.onFavoriteToggle,
     required this.onBookmarkPressed,
+    required this.onOpenMap,
+    required this.onOpenInfo,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
-        // Pass the required roomId to Gmap
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => Gmap(roomId: roomId)),
-        );
-      },
+      onTap: onOpenInfo,
       child: Card(
         margin: const EdgeInsets.only(bottom: 15),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -809,12 +1013,25 @@ class ApartmentCard extends StatelessWidget {
           children: [
             Stack(
               children: [
-                Image.asset(
-                  'assets/images/roompano.png',
-                  height: 100,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+                (data.imageUrl != null && data.imageUrl!.isNotEmpty)
+                    ? Image.network(
+                        data.imageUrl!,
+                        height: 120,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Image.asset(
+                          'assets/images/roompano.png',
+                          height: 120,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                        ),
+                      )
+                    : Image.asset(
+                        'assets/images/roompano.png',
+                        height: 120,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
                 Positioned(
                   top: 10,
                   right: 10,
@@ -831,29 +1048,48 @@ class ApartmentCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               color: const Color(0xFF5A7689),
-              child: const Column(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "Smart Finder Apartment",
-                    style: TextStyle(
+                    data.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   Text(
-                    "₱ 3750 / Month",
-                    style: TextStyle(color: Colors.orange),
+                    data.price,
+                    style: const TextStyle(color: Colors.orange),
                   ),
-                  SizedBox(height: 5),
-                  Text(
-                    "Davao City, Matina Crossing, Grazuhan Alvaran st.",
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  const SizedBox(height: 5),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.location_on,
+                        size: 14,
+                        color: Colors.white70,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          data.address,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  SizedBox(height: 8),
-                  Text(
-                    "#NearJTI #OwnCR #SingleBed #WiFi #CCTV",
+                  const SizedBox(height: 8),
+                  const Text(
+                    "#WiFi #CCTV #NearTransport",
                     style: TextStyle(
                       color: Colors.lightBlueAccent,
                       fontSize: 12,
@@ -864,10 +1100,20 @@ class ApartmentCard extends StatelessWidget {
             ),
             Container(
               color: const Color(0xFF5A7689),
-              padding: const EdgeInsets.only(right: 10, bottom: 10),
+              padding: const EdgeInsets.only(right: 10, left: 10, bottom: 10),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  // Open Map
+                  TextButton.icon(
+                    onPressed: onOpenMap,
+                    icon: const Icon(Icons.map, color: Colors.white, size: 18),
+                    label: const Text(
+                      'Map',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                  // Bookmark
                   GestureDetector(
                     onTap: onBookmarkPressed,
                     child: Icon(

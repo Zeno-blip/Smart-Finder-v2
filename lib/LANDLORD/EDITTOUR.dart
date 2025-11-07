@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:panorama_viewer/panorama_viewer.dart';
+import 'package:panorama/panorama.dart'; // ✅ use panorama plugin
 
 class EditTour extends StatefulWidget {
   const EditTour({super.key});
@@ -9,10 +9,10 @@ class EditTour extends StatefulWidget {
 }
 
 class _EditTourState extends State<EditTour> {
-  // Current selected panorama
+  // Currently displayed panorama
   String _selectedImage = "assets/images/roompano.png";
 
-  // Hotspots grouped by image
+  // Hotspots grouped by panorama
   final Map<String, List<Map<String, dynamic>>> _hotspotsByImage = {};
 
   // Available panorama images
@@ -22,15 +22,12 @@ class _EditTourState extends State<EditTour> {
     "assets/images/roompano3.png",
   ];
 
-  // Keep track of which hotspot is selected (for sliders)
+  // Track selected hotspot for slider adjustment
   int? _selectedHotspotIdx;
 
   @override
   Widget build(BuildContext context) {
-    // Get hotspots only for the current selected image
-    final List<Map<String, dynamic>> currentHotspots =
-        _hotspotsByImage[_selectedImage] ?? [];
-
+    final currentHotspots = _hotspotsByImage[_selectedImage] ?? [];
     final hasSelection =
         _selectedHotspotIdx != null &&
         _selectedHotspotIdx! >= 0 &&
@@ -60,117 +57,71 @@ class _EditTourState extends State<EditTour> {
       ),
       body: Column(
         children: [
-          // Panorama Viewer (panorama_viewer)
+          // PANORAMA VIEWER
           Expanded(
             child: Stack(
               children: [
                 Positioned.fill(
-                  child: GestureDetector(
-                    // Tap anywhere to deselect hotspot so you can pick another
-                    onTap: () => setState(() => _selectedHotspotIdx = null),
-                    child: PanoramaViewer(
-                      child: Image.asset(_selectedImage, fit: BoxFit.cover),
-                    ),
-                  ),
-                ),
-
-                // Top-right: quick list of hotspots (acts like on-image markers)
-                Positioned(
-                  top: 12,
-                  right: 12,
-                  child: Material(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: currentHotspots.isEmpty
-                          ? const Text(
-                              "No hotspots",
-                              style: TextStyle(color: Colors.white70),
-                            )
-                          : Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  "Hotspots",
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                ...List.generate(currentHotspots.length, (i) {
-                                  final spot = currentHotspots[i];
-                                  final selected = _selectedHotspotIdx == i;
-                                  final label = (spot["label"] as String?)
-                                      ?.trim();
-                                  final title = (label?.isNotEmpty ?? false)
-                                      ? label!
-                                      : "Hotspot ${i + 1}";
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: InkWell(
-                                      onTap: () => setState(() {
-                                        _selectedHotspotIdx = i;
-                                      }),
-                                      onLongPress: () => _editHotspot(spot),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            Icons.place,
-                                            size: 18,
-                                            color: selected
-                                                ? Colors.amber
-                                                : Colors.white70,
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            title,
-                                            style: TextStyle(
-                                              color: selected
-                                                  ? Colors.amber
-                                                  : Colors.white70,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                }),
-                              ],
+                  child: Panorama(
+                    sensorControl: SensorControl.Orientation,
+                    animSpeed: 0.5,
+                    child: Image.asset(_selectedImage),
+                    hotspots: [
+                      for (int i = 0; i < currentHotspots.length; i++)
+                        Hotspot(
+                          latitude: (currentHotspots[i]["lat"] as num)
+                              .toDouble(),
+                          longitude: (currentHotspots[i]["lon"] as num)
+                              .toDouble(),
+                          width: 60,
+                          height: 60,
+                          widget: GestureDetector(
+                            onTap: () {
+                              setState(() => _selectedHotspotIdx = i);
+                            },
+                            onDoubleTap: () {
+                              final target =
+                                  currentHotspots[i]["target"] as String?;
+                              if (target != null &&
+                                  _availableImages.contains(target)) {
+                                setState(() {
+                                  _selectedImage = target;
+                                  _selectedHotspotIdx = null;
+                                });
+                              }
+                            },
+                            child: Icon(
+                              Icons.place,
+                              color: _selectedHotspotIdx == i
+                                  ? Colors.amber
+                                  : Colors.redAccent,
+                              size: 40,
                             ),
-                    ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
 
-                // Bottom-right: Add Hotspot button
+                // Add Hotspot button
                 Positioned(
                   bottom: 20,
                   right: 20,
-                  child: SizedBox(
-                    width: 50,
-                    height: 50,
-                    child: FloatingActionButton(
-                      backgroundColor: Colors.blue,
-                      onPressed: _addHotspot,
-                      child: const Icon(
-                        Icons.add,
-                        color: Colors.white,
-                        size: 36,
-                      ),
-                    ),
+                  child: FloatingActionButton(
+                    backgroundColor: Colors.blue,
+                    onPressed: _addHotspot,
+                    child: const Icon(Icons.add, size: 30, color: Colors.white),
                   ),
                 ),
               ],
             ),
           ),
 
-          // Hotspot position controls (since panorama_viewer has no draggable hotspots)
+          // --- Slider controls for selected hotspot ---
           if (hasSelection)
             Container(
               color: const Color(0xFF6B8591),
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -196,8 +147,6 @@ class _EditTourState extends State<EditTour> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  // Longitude slider
                   Row(
                     children: [
                       const SizedBox(
@@ -215,14 +164,12 @@ class _EditTourState extends State<EditTour> {
                           divisions: 360,
                           label:
                               "${(selectedSpot["lon"] as num).toStringAsFixed(0)}°",
-                          onChanged: (v) {
-                            setState(() => selectedSpot["lon"] = v);
-                          },
+                          onChanged: (v) =>
+                              setState(() => selectedSpot["lon"] = v),
                         ),
                       ),
                     ],
                   ),
-                  // Latitude slider
                   Row(
                     children: [
                       const SizedBox(
@@ -240,9 +187,8 @@ class _EditTourState extends State<EditTour> {
                           divisions: 180,
                           label:
                               "${(selectedSpot["lat"] as num).toStringAsFixed(0)}°",
-                          onChanged: (v) {
-                            setState(() => selectedSpot["lat"] = v);
-                          },
+                          onChanged: (v) =>
+                              setState(() => selectedSpot["lat"] = v),
                         ),
                       ),
                     ],
@@ -251,17 +197,17 @@ class _EditTourState extends State<EditTour> {
               ),
             ),
 
-          // Thumbnails (with border)
+          // --- Thumbnails ---
           Container(
             color: const Color(0xFF6B8591),
             padding: const EdgeInsets.all(10),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: _availableImages.map((img) => _thumbnail(img)).toList(),
+              children: _availableImages.map(_thumbnail).toList(),
             ),
           ),
 
-          // Save button
+          // --- Save button ---
           Container(
             width: double.infinity,
             color: const Color(0xFF6B8591),
@@ -292,7 +238,7 @@ class _EditTourState extends State<EditTour> {
     );
   }
 
-  /// Add hotspot to the current image
+  // ---- Add hotspot ----
   void _addHotspot() {
     setState(() {
       _hotspotsByImage.putIfAbsent(_selectedImage, () => []);
@@ -306,7 +252,7 @@ class _EditTourState extends State<EditTour> {
     });
   }
 
-  /// Edit hotspot (with delete button)
+  // ---- Edit hotspot ----
   void _editHotspot(Map<String, dynamic> spot) {
     final controller = TextEditingController(text: spot["label"]);
     String? selectedTarget = spot["target"];
@@ -329,15 +275,15 @@ class _EditTourState extends State<EditTour> {
                 labelText: "Navigate to",
                 border: OutlineInputBorder(),
               ),
-              items: _availableImages.map((img) {
-                return DropdownMenuItem(
-                  value: img,
-                  child: Text(img.split("/").last),
-                );
-              }).toList(),
-              onChanged: (value) {
-                selectedTarget = value;
-              },
+              items: _availableImages
+                  .map(
+                    (img) => DropdownMenuItem(
+                      value: img,
+                      child: Text(img.split("/").last),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => selectedTarget = v,
             ),
           ],
         ),
@@ -372,7 +318,7 @@ class _EditTourState extends State<EditTour> {
     );
   }
 
-  /// Thumbnail with border
+  // ---- Thumbnails ----
   Widget _thumbnail(String imagePath) {
     return GestureDetector(
       onTap: () {
@@ -382,15 +328,13 @@ class _EditTourState extends State<EditTour> {
         });
       },
       child: Container(
-        width: 150,
-        height: 150,
+        width: 120,
+        height: 120,
         margin: const EdgeInsets.symmetric(horizontal: 4),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(6),
           border: Border.all(
-            color: _selectedImage == imagePath
-                ? Colors.blueAccent
-                : const Color.fromARGB(255, 255, 255, 255),
+            color: _selectedImage == imagePath ? Colors.amber : Colors.white,
             width: 3,
           ),
           image: DecorationImage(

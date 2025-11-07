@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:smart_finder/LANDLORD/CHAT2.dart';
 import 'package:smart_finder/LANDLORD/LSETTINGS.dart';
+import 'package:smart_finder/LANDLORD/landlord_rooms_page.dart';
 import 'timeline.dart';
 import 'tenants.dart';
 import 'totalroom.dart';
@@ -49,7 +50,7 @@ class _DashboardState extends State<Dashboard> {
     } else if (index == 5) {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => const TotalRoom()),
+        MaterialPageRoute(builder: (context) => const LandlordRoomsPage()),
       );
     } else if (index == 6) {
       Navigator.push(

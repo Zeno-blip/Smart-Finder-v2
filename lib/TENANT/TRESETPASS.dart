@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:smart_finder/TENANT/TLOGIN.dart'; // <-- make sure this path/class exists (LoginT)
 
 class TenantResetPassword extends StatefulWidget {
   const TenantResetPassword({super.key});
@@ -8,12 +10,90 @@ class TenantResetPassword extends StatefulWidget {
 }
 
 class _TenantResetPasswordState extends State<TenantResetPassword> {
+  final _sb = Supabase.instance.client;
+
   bool _obscureNewPassword = true;
   bool _obscureConfirmPassword = true;
 
   final TextEditingController _newPasswordController = TextEditingController();
   final TextEditingController _confirmPasswordController =
       TextEditingController();
+
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _newPasswordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
+
+  void _showSnack(String msg, {bool ok = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: ok ? Colors.green : Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _resetPassword() async {
+    final newPass = _newPasswordController.text.trim();
+    final confirm = _confirmPasswordController.text.trim();
+
+    // ---- validations ----
+    if (newPass.isEmpty || confirm.isEmpty) {
+      _showSnack('Please fill in all fields.');
+      return;
+    }
+    if (newPass != confirm) {
+      _showSnack('Passwords do not match.');
+      return;
+    }
+    if (newPass.length < 6) {
+      _showSnack('Password must be at least 6 characters.');
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final user = _sb.auth.currentUser;
+      if (user == null) {
+        _showSnack("You're not logged in.");
+        setState(() => _loading = false);
+        return;
+      }
+
+      // 1) Update real auth password
+      await _sb.auth.updateUser(UserAttributes(password: newPass));
+
+      // 2) Mirror into your public.users.password (optional)
+      //    Remove this block if you don't want to store plain text.
+      await _sb.from('users').update({'password': newPass}).eq('id', user.id);
+
+      _showSnack('Password updated successfully!', ok: true);
+
+      // small pause so the snackbar is visible
+      await Future.delayed(const Duration(seconds: 2));
+
+      if (!mounted) return;
+
+      // 3) Send tenant to Login screen (fresh session)
+      //    (Optionally, you can also sign out explicitly.)
+      await _sb.auth.signOut();
+
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginT()),
+        (r) => false,
+      );
+    } catch (e) {
+      _showSnack('Failed to update password: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -24,10 +104,7 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back,
-            color: Colors.white,
-          ), // White arrow
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
@@ -43,7 +120,6 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
         child: Column(
           children: [
             const SizedBox(height: 20),
-
             SizedBox(
               height: 150,
               child: Image.asset(
@@ -51,9 +127,7 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                 fit: BoxFit.contain,
               ),
             ),
-
             const SizedBox(height: 30),
-
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 20),
               padding: const EdgeInsets.all(16),
@@ -74,11 +148,9 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 16),
-
                   const Text(
-                    "Please enter your current password",
+                    "Enter your new password below.",
                     style: TextStyle(
                       fontSize: 14,
                       color: Colors.black87,
@@ -87,6 +159,7 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                   ),
                   const SizedBox(height: 16),
 
+                  // New password
                   TextField(
                     controller: _newPasswordController,
                     obscureText: _obscureNewPassword,
@@ -101,11 +174,9 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                               ? Icons.visibility_off
                               : Icons.visibility,
                         ),
-                        onPressed: () {
-                          setState(() {
-                            _obscureNewPassword = !_obscureNewPassword;
-                          });
-                        },
+                        onPressed: () => setState(
+                          () => _obscureNewPassword = !_obscureNewPassword,
+                        ),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
@@ -126,6 +197,7 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
 
                   const SizedBox(height: 16),
 
+                  // Confirm password
                   TextField(
                     controller: _confirmPasswordController,
                     obscureText: _obscureConfirmPassword,
@@ -140,11 +212,10 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                               ? Icons.visibility_off
                               : Icons.visibility,
                         ),
-                        onPressed: () {
-                          setState(() {
-                            _obscureConfirmPassword = !_obscureConfirmPassword;
-                          });
-                        },
+                        onPressed: () => setState(
+                          () => _obscureConfirmPassword =
+                              !_obscureConfirmPassword,
+                        ),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(6),
@@ -169,9 +240,9 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       ElevatedButton(
-                        onPressed: () {
-                          Navigator.pop(context);
-                        },
+                        onPressed: _loading
+                            ? null
+                            : () => Navigator.pop(context),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.grey.shade300,
                           foregroundColor: Colors.black,
@@ -184,7 +255,7 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                       ),
                       const SizedBox(width: 12),
                       ElevatedButton(
-                        onPressed: () {},
+                        onPressed: _loading ? null : _resetPassword,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.lightBlueAccent,
                           foregroundColor: Colors.white,
@@ -193,7 +264,16 @@ class _TenantResetPasswordState extends State<TenantResetPassword> {
                             borderRadius: BorderRadius.circular(6),
                           ),
                         ),
-                        child: const Text("Submit"),
+                        child: _loading
+                            ? const SizedBox(
+                                height: 18,
+                                width: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text("Submit"),
                       ),
                     ],
                   ),

@@ -24,10 +24,14 @@ class _TenantListChatState extends State<TenantListChat> {
   int _selectedIndex = 1;
 
   bool _loading = true;
+  String? _error;
   List<Map<String, dynamic>> _rows = [];
 
+  /// landlord_id -> { name, avatar_url }
+  final Map<String, Map<String, String?>> _landlords = {};
+
   RealtimeChannel? _channel;
-  bool _navigating = false; // <— tap guard
+  bool _navigating = false;
 
   @override
   void initState() {
@@ -43,29 +47,70 @@ class _TenantListChatState extends State<TenantListChat> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
-    final me = _sb.auth.currentUser?.id;
-    if (me == null) {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final me = _sb.auth.currentUser?.id;
+      if (me == null) {
+        setState(() {
+          _rows = [];
+          _loading = false;
+        });
+        return;
+      }
+
+      // Pull tenant inbox rows
+      final data = await _sb
+          .from('tenant_inbox')
+          .select(
+            'conversation_id, tenant_id, landlord_id, last_message, last_time, unread_for_tenant',
+          )
+          .eq('tenant_id', me)
+          .order('last_time', ascending: false);
+
+      final list = List<Map<String, dynamic>>.from(data as List);
+      _rows = list;
+
+      // Bulk-fetch landlord display info (name) then build avatar URL from bucket
+      final ids = list
+          .map((r) => r['landlord_id'])
+          .where((e) => e != null)
+          .map((e) => e.toString())
+          .toSet()
+          .toList();
+
+      _landlords.clear();
+
+      if (ids.isNotEmpty) {
+        // v2: inFilter (NOT in_). We only fetch id & full_name; no avatar_url column in your users table.
+        final u = await _sb
+            .from('users')
+            .select('id, full_name')
+            .inFilter('id', ids);
+
+        final storage = _sb.storage.from('avatars');
+        for (final row in (u as List)) {
+          final id = row['id'].toString();
+          final name = (row['full_name'] as String?)?.trim();
+          final jpg = storage.getPublicUrl('$id.jpg');
+          _landlords[id] = {
+            'name': name,
+            'avatar_url': jpg, // simple pick; UI shows icon if missing
+          };
+        }
+      }
+
+      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _rows = [];
+        _error = 'Failed to load chats: $e';
         _loading = false;
       });
-      return;
     }
-
-    // mirror of landlord_inbox; rename if yours differs
-    final data = await _sb
-        .from('tenant_inbox')
-        .select(
-          'conversation_id, tenant_id, landlord_id, last_message, last_time, unread_for_tenant',
-        )
-        .eq('tenant_id', me)
-        .order('last_time', ascending: false);
-
-    setState(() {
-      _rows = List<Map<String, dynamic>>.from(data);
-      _loading = false;
-    });
   }
 
   void _subscribe() {
@@ -181,12 +226,24 @@ class _TenantListChatState extends State<TenantListChat> {
             ),
           ),
           const SizedBox(height: 20),
+
           if (_loading)
             const Padding(
               padding: EdgeInsets.all(20),
               child: CircularProgressIndicator(),
             ),
-          if (!_loading)
+
+          if (!_loading && _error != null)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: Colors.redAccent),
+                textAlign: TextAlign.center,
+              ),
+            ),
+
+          if (!_loading && _error == null)
             Expanded(
               child: ListView.separated(
                 itemCount: filtered.length,
@@ -195,6 +252,7 @@ class _TenantListChatState extends State<TenantListChat> {
                 itemBuilder: (context, index) {
                   final row = filtered[index];
                   final last = (row['last_message'] ?? '').toString();
+
                   DateTime? t;
                   if (row['last_time'] != null) {
                     try {
@@ -204,14 +262,39 @@ class _TenantListChatState extends State<TenantListChat> {
                   final unread =
                       int.tryParse('${row['unread_for_tenant'] ?? 0}') ?? 0;
 
+                  final lid = (row['landlord_id'] ?? '').toString();
+                  final lInfo = _landlords[lid] ?? const {};
+                  final lname = (lInfo['name']?.isNotEmpty == true)
+                      ? lInfo['name']!
+                      : 'Landlord';
+                  final lavatar = lInfo['avatar_url'];
+
+                  final leading = CircleAvatar(
+                    radius: 24,
+                    backgroundColor: Colors.white,
+                    child: ClipOval(
+                      child: SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: (lavatar != null && lavatar.isNotEmpty)
+                            ? Image.network(
+                                lavatar,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.person,
+                                  color: Colors.grey,
+                                ),
+                              )
+                            : const Icon(Icons.person, color: Colors.grey),
+                      ),
+                    ),
+                  );
+
                   return ListTile(
                     tileColor: const Color(0xFFD9D9D9),
-                    leading: const CircleAvatar(
-                      radius: 24,
-                      backgroundImage: AssetImage('assets/images/landlord.png'),
-                    ),
+                    leading: leading,
                     title: Text(
-                      'Landlord • ${_formatWhen(t)}',
+                      '$lname • ${_formatWhen(t)}',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     subtitle: Text(
@@ -260,10 +343,9 @@ class _TenantListChatState extends State<TenantListChat> {
                           MaterialPageRoute(
                             builder: (_) => ChatScreenTenant(
                               conversationId: cid,
-                              peerName: 'Landlord',
-                              peerImageAsset: 'assets/images/landlord.png',
-                              landlordPhone:
-                                  null, // fetched in chat if not provided
+                              peerName: lname,
+                              peerAvatarUrl: lavatar, // from bucket
+                              landlordPhone: null, // chat will fetch if needed
                             ),
                           ),
                         );

@@ -1,15 +1,20 @@
+// lib/LANDLORD/LSETTINGS.dart
 import 'package:flutter/material.dart';
+import 'package:smart_finder/LANDLORD/EDITPROFILE.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:smart_finder/LANDLORD/CHAT2.dart';
 import 'package:smart_finder/LANDLORD/DASHBOARD.dart';
-import 'package:smart_finder/LANDLORD/EDITPROFILE.dart';
-import 'package:smart_finder/LANDLORD/PROFILE.dart';
+import 'package:smart_finder/LANDLORD/profile.dart' show Adminprofile;
 import 'package:smart_finder/LANDLORD/RESETPASS.dart';
 import 'package:smart_finder/LANDLORD/TIMELINE.dart';
 import 'package:smart_finder/LANDLORD/APARTMENT.dart';
 import 'package:smart_finder/LANDLORD/TENANTS.dart';
 import 'package:smart_finder/LANDLORD/TOTALROOM.dart';
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
-import 'package:smart_finder/TERMSCONDITION.dart';
+import 'package:smart_finder/TENANT/TERMSCONDITION.dart';
+
+// ⬇️ IMPORT THE EDITOR (class LandlordEditProfile)
 
 class LandlordSettings extends StatefulWidget {
   const LandlordSettings({super.key});
@@ -19,52 +24,120 @@ class LandlordSettings extends StatefulWidget {
 }
 
 class _LandlordSettingsState extends State<LandlordSettings> {
+  final _sb = Supabase.instance.client;
+
   bool _notificationEnabled = true;
   int _selectedIndex = 6;
 
+  bool _loading = true;
+  String? _name;
+  String? _email;
+  String? _phone;
+  String? _address;
+  String? _avatarUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMe();
+  }
+
+  Future<void> _loadMe() async {
+    setState(() => _loading = true);
+    try {
+      final uid = _sb.auth.currentUser?.id;
+      if (uid == null) {
+        setState(() {
+          _name = 'Your name';
+          _email = '';
+          _phone = '';
+          _address = '';
+          _avatarUrl = null;
+          _loading = false;
+        });
+        return;
+      }
+
+      final row = await _sb
+          .from('users')
+          .select(
+            'full_name, first_name, last_name, email, phone, address, avatar_url',
+          )
+          .eq('id', uid)
+          .maybeSingle();
+
+      final name =
+          (row?['full_name'] ??
+                  '${row?['first_name'] ?? ''} ${row?['last_name'] ?? ''}')
+              .toString()
+              .trim();
+
+      String? avatar = (row?['avatar_url'] as String?)?.trim();
+      if (avatar == null || avatar.isEmpty) {
+        final storage = _sb.storage.from('avatars');
+        avatar = storage.getPublicUrl('$uid.jpg');
+      }
+
+      setState(() {
+        _name = name.isEmpty ? 'Your name' : name;
+        _email = (row?['email'] ?? '').toString();
+        _phone = (row?['phone'] ?? '').toString();
+        _address = (row?['address'] ?? '').toString();
+        _avatarUrl = avatar;
+        _loading = false;
+      });
+    } catch (_) {
+      setState(() {
+        _name = 'Your name';
+        _email = '';
+        _phone = '';
+        _address = '';
+        _avatarUrl = null;
+        _loading = false;
+      });
+    }
+  }
+
   void _onNavTap(int index) {
     if (_selectedIndex == index) return;
-
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
 
     if (index == 0) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Dashboard()),
+        MaterialPageRoute(builder: (_) => const Dashboard()),
       );
     } else if (index == 1) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Timeline()),
+        MaterialPageRoute(builder: (_) => const Timeline()),
       );
     } else if (index == 2) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Apartment()),
+        MaterialPageRoute(builder: (_) => const Apartment()),
       );
     } else if (index == 3) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const Tenants()),
+        MaterialPageRoute(builder: (_) => const Tenants()),
       );
     } else if (index == 4) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const ListChat()),
+        MaterialPageRoute(builder: (_) => const ListChat()),
       );
     } else if (index == 5) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const TotalRoom()),
+        MaterialPageRoute(builder: (_) => const TotalRoom()),
       );
     } else if (index == 6) {
-      // Already on Settings
+      // stay
     } else if (index == 7) {
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const Login()),
+        MaterialPageRoute(builder: (_) => const Login()),
         (route) => false,
       );
     }
@@ -72,6 +145,11 @@ class _LandlordSettingsState extends State<LandlordSettings> {
 
   @override
   Widget build(BuildContext context) {
+    final avatarProvider =
+        (_avatarUrl != null && _avatarUrl!.startsWith('http'))
+        ? NetworkImage(_avatarUrl!)
+        : const AssetImage('assets/images/landlord.png') as ImageProvider;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0B3A5D),
       appBar: AppBar(
@@ -87,69 +165,78 @@ class _LandlordSettingsState extends State<LandlordSettings> {
             color: Colors.white,
           ),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            onPressed: _loadMe,
+            tooltip: 'Refresh',
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
         child: ListView(
           children: [
-            _buildTile(
-              leading: const CircleAvatar(
-                backgroundImage: AssetImage('assets/images/landlord.png'),
-              ),
-              title: 'John Doe',
+            _tile(
+              leading: CircleAvatar(backgroundImage: avatarProvider),
+              title: _loading ? 'Loading…' : (_name ?? 'Your name'),
               subtitle: 'Profile',
               onTap: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const Adminprofile()),
+                  MaterialPageRoute(builder: (_) => const Adminprofile()),
                 );
               },
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
-            _buildTile(
+            _tile(
               leading: const Icon(Icons.person, color: Colors.black54),
               title: 'Account',
               subtitle: 'Edit Profile',
               onTap: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const EditProfile()),
-                );
+                  MaterialPageRoute(
+                    builder: (_) => LandlordEditProfile(
+                      name: _name ?? '',
+                      email: _email ?? '',
+                      phone: _phone ?? '',
+                      address: _address ?? '',
+                      currentAvatarUrl: _avatarUrl,
+                    ),
+                  ),
+                ).then((saved) {
+                  if (saved == true) _loadMe();
+                });
               },
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
-            _buildTile(
+            _tile(
               leading: const Icon(Icons.notifications, color: Colors.black54),
               title: 'Notification',
               subtitle: 'Sound, Snooze',
               trailing: Switch(
                 value: _notificationEnabled,
-                onChanged: (val) {
-                  setState(() {
-                    _notificationEnabled = val;
-                  });
-                },
+                onChanged: (v) => setState(() => _notificationEnabled = v),
               ),
             ),
             const SizedBox(height: 12),
-            _buildTile(
+            _tile(
               leading: const Icon(Icons.security, color: Colors.black54),
               title: 'Security',
               subtitle: 'Change Password',
               onTap: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (context) => const ResetPassword(),
-                  ),
+                  MaterialPageRoute(builder: (_) => const ResetPassword()),
                 );
               },
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
-            _buildTile(
+            _tile(
               leading: const Icon(Icons.phone, color: Colors.black54),
               title: 'Contact Us',
               subtitle: 'Contact us',
@@ -157,16 +244,14 @@ class _LandlordSettingsState extends State<LandlordSettings> {
               showTrailingArrow: true,
             ),
             const SizedBox(height: 12),
-            _buildTile(
+            _tile(
               leading: const Icon(Icons.info, color: Colors.black54),
               title: 'About',
               subtitle: 'Terms and Condition',
               onTap: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (context) => const TermsAndCondition(),
-                  ),
+                  MaterialPageRoute(builder: (_) => const TermsAndCondition()),
                 );
               },
               showTrailingArrow: true,
@@ -222,7 +307,7 @@ class _LandlordSettingsState extends State<LandlordSettings> {
                   label = "";
               }
 
-              bool isSelected = _selectedIndex == index;
+              final isSelected = _selectedIndex == index;
 
               return GestureDetector(
                 onTap: () => _onNavTap(index),
@@ -263,7 +348,7 @@ class _LandlordSettingsState extends State<LandlordSettings> {
     );
   }
 
-  Widget _buildTile({
+  Widget _tile({
     required Widget leading,
     required String title,
     required String subtitle,

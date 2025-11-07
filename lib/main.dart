@@ -4,6 +4,7 @@ import 'package:smart_finder/LANDLORD/LOGIN.dart';
 import 'package:smart_finder/TENANT/TAPARTMENT.dart';
 import 'package:smart_finder/TENANT/TLOGIN.dart';
 import 'package:smart_finder/TENANT/TREGISTER.dart';
+import 'package:smart_finder/TOUR.dart';
 import 'package:smart_finder/WELCOME.dart';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -26,6 +27,6 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(debugShowCheckedModeBanner: false, home: Login());
+    return const MaterialApp(debugShowCheckedModeBanner: false, home: Welcome());
   }
 }

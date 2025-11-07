@@ -20,8 +20,9 @@ class _TenantProfileState extends State<TenantProfile> {
   final _sb = Supabase.instance.client;
   int _selectedNavIndex = 2;
 
-  Map<String, dynamic>? _userRow; // from public.users
-  String? _avatarUrl; // storage public URL
+  Map<String, dynamic>? _userRow; // public.users
+  String? _avatarUrlBase; // base URL without cache-buster
+  int _avatarVersion = 0; // increments to bust cache after edit
   bool _loading = true;
   String? _error;
 
@@ -46,26 +47,21 @@ class _TenantProfileState extends State<TenantProfile> {
         return;
       }
 
-      // Pull from your public.users table (per your schema image)
+      // NOTE: do NOT select avatar_url (column doesn’t exist in your schema)
       final row = await _sb
           .from('users')
           .select('id, full_name, email, phone, address, first_name, last_name')
           .eq('id', uid)
           .maybeSingle();
 
-      // Build avatar URL from storage (avatars/<uid>.jpg or .png – jpg default)
+      // Build a public bucket URL. Prefer JPG; you often upload JPGs.
       final storage = _sb.storage.from('avatars');
-      // Try jpg then png
-      String? url;
       final jpg = storage.getPublicUrl('$uid.jpg');
       final png = storage.getPublicUrl('$uid.png');
-      // We can't probe existence without a request; pick jpg first
-      url = jpg;
-      // If you know your uploads are png, swap the order.
 
       setState(() {
         _userRow = row ?? {};
-        _avatarUrl = url;
+        _avatarUrlBase = jpg; // simple default; UI will fallback icon if 404
         _loading = false;
       });
     } catch (e) {
@@ -82,7 +78,6 @@ class _TenantProfileState extends State<TenantProfile> {
       context,
       MaterialPageRoute(
         builder: (_) => TenantEditProfile(
-          // Pass current values (fallbacks to keep UI populated)
           name:
               (_userRow!['full_name'] ??
                       '${_userRow!['first_name'] ?? ''} ${_userRow!['last_name'] ?? ''}')
@@ -91,14 +86,18 @@ class _TenantProfileState extends State<TenantProfile> {
           email: (_userRow!['email'] ?? '').toString(),
           phone: (_userRow!['phone'] ?? '').toString(),
           address: (_userRow!['address'] ?? '').toString(),
-          currentAvatarUrl: _avatarUrl,
+          // We’ll let the edit screen show whatever it can; the profile will refresh after save.
+          currentAvatarUrl: _avatarUrlBase == null
+              ? null
+              : '$_avatarUrlBase?v=$_avatarVersion',
         ),
       ),
     );
 
-    // If edit screen says something changed, reload
+    // If something changed, refresh and bump cache-buster so the new image shows.
     if (saved == true && mounted) {
-      _load();
+      _avatarVersion++;
+      await _load();
     }
   }
 
@@ -111,6 +110,10 @@ class _TenantProfileState extends State<TenantProfile> {
             .toString()
             .trim();
     final email = (row['email'] ?? '').toString();
+
+    final avatarUrl = _avatarUrlBase == null
+        ? null
+        : '$_avatarUrlBase?v=$_avatarVersion';
 
     return Scaffold(
       backgroundColor: const Color(0xFF002D4C),
@@ -134,7 +137,6 @@ class _TenantProfileState extends State<TenantProfile> {
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white),
             onPressed: _load,
-            tooltip: 'Refresh',
           ),
         ],
       ),
@@ -149,7 +151,7 @@ class _TenantProfileState extends State<TenantProfile> {
                     ),
                   )
                 : Padding(
-                    padding: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.all(16),
                     child: SingleChildScrollView(
                       child: Column(
                         children: [
@@ -165,26 +167,28 @@ class _TenantProfileState extends State<TenantProfile> {
                                       radius: 50,
                                       backgroundColor: Colors.white,
                                       child: ClipOval(
-                                        child: _avatarUrl == null
-                                            ? Image.asset(
-                                                'assets/images/josil.png',
-                                                fit: BoxFit.cover,
-                                                width: 95,
-                                                height: 95,
-                                              )
-                                            : Image.network(
-                                                _avatarUrl!,
-                                                fit: BoxFit.cover,
-                                                width: 95,
-                                                height: 95,
-                                                errorBuilder: (_, __, ___) =>
-                                                    Image.asset(
-                                                      'assets/images/josil.png',
-                                                      fit: BoxFit.cover,
-                                                      width: 95,
-                                                      height: 95,
-                                                    ),
-                                              ),
+                                        child: SizedBox(
+                                          width: 95,
+                                          height: 95,
+                                          child:
+                                              (avatarUrl != null &&
+                                                  avatarUrl.isNotEmpty)
+                                              ? Image.network(
+                                                  avatarUrl,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder: (_, __, ___) =>
+                                                      const Icon(
+                                                        Icons.person,
+                                                        size: 60,
+                                                        color: Colors.grey,
+                                                      ),
+                                                )
+                                              : const Icon(
+                                                  Icons.person,
+                                                  size: 60,
+                                                  color: Colors.grey,
+                                                ),
+                                        ),
                                       ),
                                     ),
                                     Positioned(
@@ -266,46 +270,38 @@ class _TenantProfileState extends State<TenantProfile> {
                             ),
                           ),
                           const SizedBox(height: 50),
-
-                          // DB-driven fields
                           Row(
                             children: [
                               Expanded(
-                                child: buildInfoField(
+                                child: _info(
                                   'Full name',
                                   displayName.isEmpty ? '—' : displayName,
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: buildInfoField(
+                                child: _info(
                                   'Phone',
                                   (row['phone'] ?? '—').toString(),
                                 ),
                               ),
                             ],
                           ),
-                          buildInfoField(
-                            'Address',
-                            (row['address'] ?? '—').toString(),
-                          ),
-
-                          // Static demo fields (you can wire these later)
-                          buildInfoField('Parent Contacts', '—'),
+                          _info('Address', (row['address'] ?? '—').toString()),
+                          // Static placeholders (wire these later if needed)
+                          _info('Parent Contacts', '—'),
                           Row(
                             children: [
-                              Expanded(child: buildInfoField('Move-In', '—')),
+                              Expanded(child: _info('Move-In', '—')),
                               const SizedBox(width: 12),
-                              Expanded(
-                                child: buildInfoField('Monthly Rent', '—'),
-                              ),
+                              Expanded(child: _info('Monthly Rent', '—')),
                             ],
                           ),
                           Row(
                             children: [
-                              Expanded(child: buildInfoField('Room No.', '—')),
+                              Expanded(child: _info('Room No.', '—')),
                               const SizedBox(width: 12),
-                              Expanded(child: buildInfoField('Floor No.', '—')),
+                              Expanded(child: _info('Floor No.', '—')),
                             ],
                           ),
                           const SizedBox(height: 30),
@@ -326,61 +322,57 @@ class _TenantProfileState extends State<TenantProfile> {
           if (index == 0) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const TenantApartment()),
+              MaterialPageRoute(builder: (_) => const TenantApartment()),
             );
           } else if (index == 1) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const TenantListChat()),
+              MaterialPageRoute(builder: (_) => const TenantListChat()),
             );
           } else if (index == 2) {
-            // already here
+            // stay
           } else if (index == 3) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const TenantSettings()),
+              MaterialPageRoute(builder: (_) => const TenantSettings()),
             );
           } else if (index == 4) {
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const MyRoom()),
+              MaterialPageRoute(builder: (_) => const MyRoom()),
             );
           } else if (index == 5) {
             Navigator.pushAndRemoveUntil(
               context,
-              MaterialPageRoute(builder: (context) => const LoginT()),
-              (route) => false,
+              MaterialPageRoute(builder: (_) => const LoginT()),
+              (r) => false,
             );
           }
         },
         items: [
-          _buildNavItem(Icons.apartment, "Apartment", 0),
-          _buildNavItem(Icons.message, "Message", 1),
-          _buildNavItem(Icons.person, "Profile", 2),
-          _buildNavItem(Icons.settings, "Settings", 3),
-          _buildNavItem(Icons.door_front_door, "My Room", 4),
-          _buildNavItem(Icons.logout, "Logout", 5),
+          _nav(Icons.apartment, "Apartment", 0),
+          _nav(Icons.message, "Message", 1),
+          _nav(Icons.person, "Profile", 2),
+          _nav(Icons.settings, "Settings", 3),
+          _nav(Icons.door_front_door, "My Room", 4),
+          _nav(Icons.logout, "Logout", 5),
         ],
       ),
     );
   }
 
-  BottomNavigationBarItem _buildNavItem(
-    IconData icon,
-    String label,
-    int index,
-  ) {
-    final isSelected = _selectedNavIndex == index;
+  BottomNavigationBarItem _nav(IconData icon, String label, int index) {
+    final selected = _selectedNavIndex == index;
     return BottomNavigationBarItem(
       icon: Column(
         children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             height: 3,
-            width: isSelected ? 20 : 0,
+            width: selected ? 20 : 0,
             margin: const EdgeInsets.only(bottom: 4),
             decoration: BoxDecoration(
-              color: isSelected ? Colors.black : Colors.transparent,
+              color: selected ? Colors.black : Colors.transparent,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -391,40 +383,38 @@ class _TenantProfileState extends State<TenantProfile> {
     );
   }
 
-  Widget buildInfoField(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
+  Widget _info(String label, String value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 48,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
               color: Colors.white,
-              fontWeight: FontWeight.w600,
+              borderRadius: BorderRadius.circular(8),
             ),
-          ),
-          const SizedBox(height: 6),
-          SizedBox(
-            height: 48,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                value.isEmpty ? '—' : value,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
-                ),
+            child: Text(
+              value.isEmpty ? '—' : value,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
+        ),
+      ],
+    ),
+  );
 }

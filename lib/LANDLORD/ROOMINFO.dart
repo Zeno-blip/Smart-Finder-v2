@@ -190,7 +190,7 @@ class _RoominfoState extends State<Roominfo> {
 
   Widget _imageCarousel(BuildContext context) {
     if (_images.isEmpty) {
-      return SizedBox(
+      return const SizedBox(
         height: 120,
         child: Center(child: Text('No photos uploaded yet.')),
       );

@@ -30,7 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  panorama_viewer: ^2.0.4
+  panorama: ^0.4.1
   font_awesome_flutter: ^10.7.0
   intl: ^0.18.1
   supabase_flutter: ^2.10.0
@@ -42,6 +42,7 @@ dependencies:
   latlong2: ^0.9.1
   geocoding: ^4.0.0  # reverse geocode lat/lng -> street address
   geolocator: ^10.1.0
+  maplibre_gl: ^0.24.1
 
 
 
@@ -56,6 +57,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+
+dependency_overrides:
+  motion_sensors:
+    path: patches/motion_sensors
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
@@ -77,7 +82,7 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
      - assets/images/
-     
+     - assets/pin_red.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

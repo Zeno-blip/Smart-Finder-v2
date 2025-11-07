@@ -1,11 +1,13 @@
+// roomnotavail.dart
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../TOUR.dart';
 import 'EditRoom.dart';
 
 class RoomNotAvailable extends StatefulWidget {
   const RoomNotAvailable({super.key, required this.roomData});
-
   final Map<String, dynamic> roomData;
 
   @override
@@ -13,11 +15,132 @@ class RoomNotAvailable extends StatefulWidget {
 }
 
 class _RoomNotAvailableState extends State<RoomNotAvailable> {
+  final SupabaseClient _sb = Supabase.instance.client;
+
+  Map<String, dynamic>? _room;
+  bool _loading = true;
+
+  List<String> _imageUrls = const [];
+
+  RealtimeChannel? _roomChannel;
+  RealtimeChannel? _imagesChannel;
+
   int _hoveredIndex = -1;
   int _selectedIndex = 0;
 
+  String? _resolveRoomId() {
+    final dynamic raw = _room != null ? _room!['id'] : widget.roomData['id'];
+    if (raw == null) return null;
+    final id = raw.toString().trim();
+    return id.isEmpty ? null : id;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchAll();
+    _listenRealtime();
+  }
+
+  @override
+  void dispose() {
+    _roomChannel?.unsubscribe();
+    _imagesChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  Future<void> _fetchAll() async {
+    try {
+      final String? idOpt = _resolveRoomId();
+      if (idOpt == null) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+      final String id = idOpt;
+
+      final data = await _sb.from('rooms').select().eq('id', id).maybeSingle();
+      final imgs = await _sb
+          .from('room_images')
+          .select('image_url, storage_path, sort_order')
+          .eq('room_id', id)
+          .order('sort_order', ascending: true);
+
+      final urls = <String>[];
+      for (final row in (imgs as List? ?? const [])) {
+        final String? direct = (row['image_url'] as String?);
+        final String? storagePath = (row['storage_path'] as String?);
+        if (direct != null && direct.trim().isNotEmpty) {
+          urls.add(direct);
+        } else if (storagePath != null && storagePath.trim().isNotEmpty) {
+          final pub = _sb.storage.from('room-images').getPublicUrl(storagePath);
+          urls.add(pub);
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _room = (data as Map<String, dynamic>?) ?? widget.roomData;
+        _imageUrls = urls.isEmpty
+            ? [
+                'assets/images/roompano.png',
+                'assets/images/roompano2.png',
+                'assets/images/roompano3.png',
+              ]
+            : urls;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _listenRealtime() {
+    final String? idOpt = _resolveRoomId();
+    if (idOpt == null) return;
+    final String id = idOpt;
+
+    _roomChannel?.unsubscribe();
+    _roomChannel = _sb.channel('rooms_changes_$id')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'rooms',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'id',
+          value: id,
+        ),
+        callback: (_) async => _fetchAll(),
+      )
+      ..subscribe();
+
+    _imagesChannel?.unsubscribe();
+    _imagesChannel = _sb.channel('room_images_changes_$id')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'room_images',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'room_id',
+          value: id,
+        ),
+        callback: (_) async => _fetchAll(),
+      )
+      ..subscribe();
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFE6E6E6),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final room = _room ?? widget.roomData;
+
     return Scaffold(
       backgroundColor: const Color(0xFFE6E6E6),
       appBar: AppBar(
@@ -41,106 +164,79 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            _imageCarousel(context),
+            _imageCarousel(room),
             const SizedBox(height: 20),
-            _box1(),
-            _box2(),
-            _box3(),
-            _box4(),
-            _box5(),
+            _infoBoxes(room),
             const SizedBox(height: 20),
-            _roomDetailsBox(),
+            _roomDetailsBox(room),
             const SizedBox(height: 20),
-            _editRoomButton(),
+            _actionButtons(room),
           ],
         ),
       ),
     );
   }
 
-  Widget _imageCarousel(BuildContext context) {
-    final images = [
-      "assets/images/roompano.png",
-      "assets/images/roompano2.png",
-      "assets/images/roompano3.png",
-    ];
-
+  Widget _imageCarousel(Map<String, dynamic> room) {
     return SizedBox(
       height: 120,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: List.generate(images.length, (index) {
+        children: List.generate(_imageUrls.length, (index) {
           final isHovered = index == _hoveredIndex;
           final isSelected = index == _selectedIndex;
+          final url = _imageUrls[index];
+
+          final isAsset = url.startsWith('assets/');
+          final imageWidget = isAsset
+              ? Image.asset(url, width: 150, height: 150, fit: BoxFit.cover)
+              : Image.network(url, width: 150, height: 150, fit: BoxFit.cover);
 
           return Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4.0),
-              child: MouseRegion(
-                onEnter: (_) => setState(() => _hoveredIndex = index),
-                onExit: (_) => setState(() => _hoveredIndex = -1),
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _selectedIndex = index;
-                      _hoveredIndex = index;
-                    });
+              child: GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _selectedIndex = index;
+                    _hoveredIndex = index;
+                  });
 
-                    // ---- Extract & validate the non-null id ----
-                    final dynamic rawId = widget.roomData['id'];
-                    final String? id = rawId is String
-                        ? rawId
-                        : rawId?.toString();
-
-                    if (id == null || id.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Missing room id.')),
-                      );
-                      return;
-                    }
-
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => Tour(
-                          initialIndex: index,
-                          roomId: id, // non-null now
-                          titleHint:
-                              widget.roomData['apartment_name'] as String?,
-                          addressHint: widget.roomData['location'] as String?,
-                          monthlyHint:
-                              (widget.roomData['monthly_payment'] as num?)
-                                  ?.toDouble(),
-                        ),
-                      ),
+                  final String? roomId = _resolveRoomId();
+                  if (roomId == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Missing room id.')),
                     );
-                  },
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isHovered || isSelected
-                            ? const Color.fromARGB(255, 27, 70, 120)
-                            : const Color.fromARGB(255, 118, 118, 118),
-                        width: 3,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.08),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.asset(
-                        images[index],
-                        width: 150,
-                        height: 150,
-                        fit: BoxFit.cover,
+                    return;
+                  }
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => Tour(
+                        initialIndex: index,
+                        roomId: roomId,
+                        titleHint: (room['apartment_name'] as String?),
+                        addressHint: (room['location'] as String?),
+                        monthlyHint:
+                            (room['monthly_payment'] as num?)?.toDouble(),
                       ),
                     ),
+                  );
+                },
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isHovered || isSelected
+                          ? const Color(0xFF1B4678)
+                          : const Color(0xFF767676),
+                      width: 3,
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: imageWidget,
                   ),
                 ),
               ),
@@ -151,58 +247,42 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
     );
   }
 
-  Widget _box1() => _infoTile(
-    Icons.apartment,
-    "3rd Floor",
-    Icons.price_change,
-    "₱3,700",
-    iconSize: 28.0,
-  );
-
-  Widget _box2() => _infoTile(
-    FontAwesomeIcons.doorClosed,
-    "L204",
-    Icons.attach_money,
-    "₱3,700",
-    iconSize: 28.0,
-  );
-
-  Widget _box3() => _infoTile(
-    Icons.location_on,
-    "Davao City, Matina Crossing \nGravahan",
-    Icons.flash_on,
-    "16/watts",
-    iconSize: 28.0,
-  );
-
-  Widget _box4() => _infoTile(
-    Icons.chair,
-    "Single Bed, Table, Chair, WiFi",
-    Icons.person,
-    "Mykel Josh Nombrads",
-    iconSize: 28.0,
-  );
-
-  Widget _box5() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: const [
-          Expanded(
-            child: _InfoBox(
-              icon: Icons.apartment,
-              text: "SmartFinder Apartment",
-              iconSize: 28.0,
-            ),
-          ),
-          SizedBox(width: 10),
-          Expanded(child: SizedBox.shrink()),
-        ],
-      ),
+  Widget _infoBoxes(Map<String, dynamic> room) {
+    return Column(
+      children: [
+        _infoTile(
+          Icons.apartment,
+          "${room['floor_number'] ?? '—'}",
+          Icons.price_change,
+          "₱${room['monthly_payment'] ?? '—'}",
+          iconSize: 28.0,
+        ),
+        _infoTile(
+          FontAwesomeIcons.doorClosed,
+          room['id']?.toString() ?? "—",
+          Icons.attach_money,
+          "₱${room['advance_deposit'] ?? '—'}",
+          iconSize: 28.0,
+        ),
+        _infoTile(
+          Icons.location_on,
+          room['location'] ?? "—",
+          Icons.square_foot,
+          "${room['room_size'] ?? '—'}",
+          iconSize: 28.0,
+        ),
+        _infoTile(
+          Icons.chair,
+          room['furnishing'] ?? "Single Bed, Table, Chair, WiFi",
+          Icons.person,
+          "Occupied",
+          iconSize: 28.0,
+        ),
+      ],
     );
   }
 
-  Widget _roomDetailsBox() {
+  Widget _roomDetailsBox(Map<String, dynamic> room) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -210,47 +290,25 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.black),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-          ),
-        ],
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
+          const Text(
             "Room Details",
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
-          SizedBox(height: 8),
+          const SizedBox(height: 8),
           Text(
-            "Currently unavailable. Cozy 3rd floor room at SmartFinder Apartment in Matina, Davao City. Comes with a single bed, table, chair, and Wi-Fi. All for ₱3,700/month. Ideal for students and professionals!",
-            style: TextStyle(fontSize: 14),
-          ),
-          SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            children: [
-              Chip(
-                label: Text("#SingleBed", style: TextStyle(color: Colors.blue)),
-              ),
-              Chip(
-                label: Text("#OwnCR", style: TextStyle(color: Colors.blue)),
-              ),
-              Chip(
-                label: Text("#WithWiFi", style: TextStyle(color: Colors.blue)),
-              ),
-            ],
+            (room['description'] as String?) ??
+                "Currently unavailable. Cozy room with bed, table, chair, and Wi-Fi.",
           ),
         ],
       ),
     );
   }
 
-  Widget _editRoomButton() {
+  Widget _actionButtons(Map<String, dynamic> room) {
     return Row(
       children: [
         Expanded(
@@ -335,7 +393,7 @@ class _InfoBox extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, color: Colors.black, size: iconSize),
+          Icon(icon, color: Colors.black54, size: iconSize),
           const SizedBox(width: 10),
           Expanded(
             child: Text(

@@ -1,4 +1,6 @@
-// lib/addroom.dart
+// ADDROOM.dart
+// Uses package:panorama (NOT flutter_panorama). Provides Panorama, Hotspot, SensorControl.
+
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -6,9 +8,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:panorama_viewer/panorama_viewer.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:panorama/panorama.dart'; // <-- correct package
+
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:smart_finder/LANDLORD/LOGIN.dart';
 
 class _NeedsLogin implements Exception {
@@ -27,26 +30,27 @@ class LocalImage {
       Image.memory(bytes, width: width, height: height, fit: fit);
 }
 
-class Hotspot {
-  final double dx; // radians (longitude, -pi..pi)
-  final double dy; // radians (latitude, -pi/2..pi/2)
+class AppHotspot {
+  // store radians internally (lon=dx, lat=dy)
+  final double dx; // [-pi, pi]
+  final double dy; // [-pi/2, pi/2]
   final int targetImageIndex;
   final String? label;
 
-  Hotspot({
+  AppHotspot({
     required this.dx,
     required this.dy,
     required this.targetImageIndex,
     this.label,
   });
 
-  Hotspot copyWith({
+  AppHotspot copyWith({
     double? dx,
     double? dy,
     int? targetImageIndex,
     String? label,
   }) {
-    return Hotspot(
+    return AppHotspot(
       dx: dx ?? this.dx,
       dy: dy ?? this.dy,
       targetImageIndex: targetImageIndex ?? this.targetImageIndex,
@@ -79,7 +83,7 @@ class _AddroomState extends State<Addroom> {
   final List<LocalImage> roomImages = [];
   final ImagePicker _picker = ImagePicker();
 
-  Map<int, List<Hotspot>> hotspotsByImageIndex = {};
+  Map<int, List<AppHotspot>> hotspotsByImageIndex = {};
 
   final TextEditingController floorCtrl = TextEditingController();
   final TextEditingController nameCtrl = TextEditingController();
@@ -135,7 +139,9 @@ class _AddroomState extends State<Addroom> {
         locationCtrl.text = address;
         nameCtrl.text = aptName;
       });
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Failed to load landlord profile: $e');
+    }
   }
 
   String _orEq(String column, List<String> values) =>
@@ -385,36 +391,38 @@ class _AddroomState extends State<Addroom> {
     );
   }
 
-  // ---------- Images grid with hotspot counters ----------
   Widget _buildImagesGrid() {
     final tiles = <Widget>[
       for (int i = 0; i < roomImages.length; i++)
         GestureDetector(
           onTap: () => _replaceImage(i),
           onLongPress: () => _confirmDeleteImage(i),
-          child: Stack(
-            children: [
-              Container(
-                width: 110,
-                height: 110,
+          child: Container(
+            width: 110,
+            height: 110,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(10),
+              image: DecorationImage(
+                image: roomImages[i].provider(),
+                fit: BoxFit.cover,
+              ),
+            ),
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Container(
+                margin: const EdgeInsets.all(6),
+                padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(10),
-                  image: DecorationImage(
-                    image: roomImages[i].provider(),
-                    fit: BoxFit.cover,
-                  ),
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '#${i + 1}',
+                  style: const TextStyle(color: Colors.white, fontSize: 10),
                 ),
               ),
-              Positioned(top: 6, right: 6, child: _tinyBadge('#${i + 1}')),
-              Positioned(
-                bottom: 6,
-                right: 6,
-                child: _tinyBadge(
-                  'HS: ${(hotspotsByImageIndex[i] ?? const []).length}',
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       InkWell(
@@ -448,20 +456,6 @@ class _AddroomState extends State<Addroom> {
     );
   }
 
-  Widget _tinyBadge(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-      decoration: BoxDecoration(
-        color: Colors.black54,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(color: Colors.white, fontSize: 10),
-      ),
-    );
-  }
-
   Future<void> _pickAndAddImage() async {
     try {
       final XFile? picked = await _picker.pickImage(
@@ -471,7 +465,13 @@ class _AddroomState extends State<Addroom> {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages.add(LocalImage(bytes)));
       }
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('pickImage failed: $e\n$st');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Image pick failed: $e')));
+    }
   }
 
   Future<void> _replaceImage(int index) async {
@@ -483,7 +483,13 @@ class _AddroomState extends State<Addroom> {
         final bytes = await picked.readAsBytes();
         setState(() => roomImages[index] = LocalImage(bytes));
       }
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('replaceImage failed: $e\n$st');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Replace failed: $e')));
+    }
   }
 
   Future<void> _confirmDeleteImage(int index) async {
@@ -519,18 +525,16 @@ class _AddroomState extends State<Addroom> {
     });
   }
 
-  Map<int, List<Hotspot>> _remapHotspotsAfterDeletion(
-    Map<int, List<Hotspot>> src,
+  Map<int, List<AppHotspot>> _remapHotspotsAfterDeletion(
+    Map<int, List<AppHotspot>> src,
     int removedIndex,
   ) {
-    final Map<int, List<Hotspot>> out = {};
+    final Map<int, List<AppHotspot>> out = {};
     for (final entry in src.entries) {
       final key = entry.key;
       if (key == removedIndex) continue;
-
       final newKey = key > removedIndex ? key - 1 : key;
-      final newList = <Hotspot>[];
-
+      final newList = <AppHotspot>[];
       for (final h in entry.value) {
         if (h.targetImageIndex == removedIndex) continue;
         final newTarget = h.targetImageIndex > removedIndex
@@ -550,9 +554,7 @@ class _AddroomState extends State<Addroom> {
       );
       return;
     }
-
     setState(() => _saving = true);
-
     try {
       await _ensureAuth();
       final ok = await _saveToSupabase();
@@ -673,18 +675,51 @@ class _AddroomState extends State<Addroom> {
         final tgtId = imageIdBySort[h.targetImageIndex];
         if (tgtId == null) continue;
 
-        double lon = h.dx;
-        while (lon <= -math.pi) lon += 2 * math.pi;
-        while (lon > math.pi) lon -= 2 * math.pi;
+        double lon = h.dx % (2 * math.pi);
+        if (lon <= -math.pi) lon += 2 * math.pi;
+        if (lon > math.pi) lon -= 2 * math.pi;
         final double lat = _clamp(h.dy, -math.pi / 2, math.pi / 2);
+
+        final double dxDb = _clamp((lon + math.pi) / (2 * math.pi), 0.0, 1.0);
+        final double dyDb = _clamp((lat + math.pi / 2) / math.pi, 0.0, 1.0);
 
         await supabase.from('hotspots').insert({
           'room_id': roomId,
           'source_image_id': srcId,
           'target_image_id': tgtId,
-          'dx': _round(lon, 6),
-          'dy': _round(lat, 6),
+          'dx': _round(dxDb, 6),
+          'dy': _round(dyDb, 6),
           'label': h.label,
+        });
+      }
+    }
+
+    if (inclusions.isNotEmpty) {
+      final incList =
+          await supabase
+                  .from('inclusion_options')
+                  .select('id,name')
+                  .or(_orEq('name', inclusions))
+              as List;
+      for (final o in incList) {
+        await supabase.from('room_inclusions').insert({
+          'room_id': roomId,
+          'inclusion_id': o['id'],
+        });
+      }
+    }
+
+    if (preferences.isNotEmpty) {
+      final prefList =
+          await supabase
+                  .from('preference_options')
+                  .select('id,name')
+                  .or(_orEq('name', preferences))
+              as List;
+      for (final o in prefList) {
+        await supabase.from('room_preferences').insert({
+          'room_id': roomId,
+          'preference_id': o['id'],
         });
       }
     }
@@ -701,33 +736,30 @@ class _AddroomState extends State<Addroom> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Add at least one panorama first.')),
       );
-    } else {
-      final result = await Navigator.push<Map<int, List<Hotspot>>>(
+      return;
+    }
+    try {
+      final result = await Navigator.push<Map<int, List<AppHotspot>>>(
         context,
         MaterialPageRoute(
-          builder: (_) => HotspotEditorPV(
+          fullscreenDialog: true,
+          builder: (ctx) => HotspotEditor(
             images: List<LocalImage>.from(roomImages),
             initialHotspotsByImageIndex: {
               for (final e in hotspotsByImageIndex.entries)
-                e.key: List<Hotspot>.from(e.value),
+                e.key: List<AppHotspot>.from(e.value),
             },
           ),
         ),
       );
-      if (result != null) {
-        setState(() {
-          hotspotsByImageIndex = {
-            for (final e in result.entries) e.key: List<Hotspot>.from(e.value),
-          };
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Saved hotspots. Total: ${hotspotsByImageIndex.values.fold<int>(0, (p, l) => p + l.length)}',
-            ),
-          ),
-        );
-      }
+      if (!mounted) return;
+      if (result != null) setState(() => hotspotsByImageIndex = result);
+    } catch (e, st) {
+      debugPrint('HotspotEditor route failed: $e\n$st');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to open hotspot editor: $e')),
+      );
     }
   }
 
@@ -820,7 +852,6 @@ class _AddroomState extends State<Addroom> {
               );
             },
           );
-
           if (result != null) onConfirm(result);
         },
         child: Row(
@@ -841,48 +872,53 @@ class _AddroomState extends State<Addroom> {
   }
 }
 
-/* ========= Boxed hotspot editor (panorama_viewer) ========= */
+/* ==================== Hotspot Editor ==================== */
 
-class HotspotEditorPV extends StatefulWidget {
+class HotspotEditor extends StatefulWidget {
   final List<LocalImage> images;
-  final Map<int, List<Hotspot>> initialHotspotsByImageIndex;
+  final Map<int, List<AppHotspot>> initialHotspotsByImageIndex;
 
-  const HotspotEditorPV({
+  const HotspotEditor({
     super.key,
     required this.images,
     required this.initialHotspotsByImageIndex,
   });
 
   @override
-  State<HotspotEditorPV> createState() => _HotspotEditorPVState();
+  State<HotspotEditor> createState() => _HotspotEditorState();
 }
 
-class _HotspotEditorPVState extends State<HotspotEditorPV> {
-  late Map<int, List<Hotspot>> hotspotsByImageIndex;
+class _HotspotEditorState extends State<HotspotEditor> {
+  late Map<int, List<AppHotspot>> hotspotsByImageIndex;
   int currentIndex = 0;
 
-  bool addMode = false;
+  double _viewLon = 0.0; // radians
+  double _viewLat = 0.0; // radians
 
-  double _viewLon = 0.0; // yaw
-  double _viewLat = 0.0; // pitch
-  double _viewTilt = 0.0;
-
-  // Field-of-view model (approx): 180° horizontal, 90° vertical.
-  static const double _hFov = math.pi; // 180°
-  static const double _vFov = math.pi / 2; // 90°
+  bool _placing = false;
+  late List<Size?> _imgSizes;
 
   @override
   void initState() {
     super.initState();
+    if (widget.images.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.pop(context, <int, List<AppHotspot>>{});
+      });
+    }
     hotspotsByImageIndex = {
       for (final e in widget.initialHotspotsByImageIndex.entries)
-        e.key: List<Hotspot>.from(e.value),
+        e.key: List<AppHotspot>.from(e.value),
     };
+    _imgSizes = List<Size?>.filled(widget.images.length, null);
+    _ensureDecoded(currentIndex);
   }
 
-  List<Hotspot> _spots() =>
-      hotspotsByImageIndex[currentIndex] ??
-      (hotspotsByImageIndex[currentIndex] = <Hotspot>[]);
+  List<AppHotspot> _spots() =>
+      hotspotsByImageIndex[currentIndex] ?? <AppHotspot>[];
+
+  double _deg(double rad) => rad * 180 / math.pi;
+  double _rad(double deg) => deg * math.pi / 180.0;
 
   double _wrap(double a) {
     while (a > math.pi) a -= 2 * math.pi;
@@ -890,75 +926,24 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
     return a;
   }
 
-  // Proper world-anchored projection:
-  // - compute delta to current view center
-  // - hide when outside FOV
-  // - map delta to screen pixels
-  Offset? _projectToOverlay(Size box, double lon, double lat) {
-    final dLon = _wrap(lon - _viewLon);
-    if (dLon.abs() > _hFov / 2) return null;
+  double _clampLat(double v) =>
+      v.isFinite ? v.clamp(-math.pi / 2, math.pi / 2).toDouble() : 0.0;
 
-    final dLat = (lat - _viewLat).clamp(-math.pi / 2, math.pi / 2);
-    if (dLat.abs() > _vFov / 2) return null;
-
-    final x = box.width * (0.5 + dLon / _hFov);
-    final y = box.height * (0.5 - dLat / _vFov);
-    return Offset(x, y);
-  }
-
-  void _toggleAddMode() {
-    setState(() => addMode = !addMode);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          addMode
-              ? 'Tap inside the panorama to place a hotspot'
-              : 'Add mode off',
-        ),
-      ),
-    );
-  }
-
-  // INSTANT ADD then edit
-  Future<void> _onTapPano(double lon, double lat, double tilt) async {
-    if (!addMode) return;
-
-    final newHotspot = Hotspot(
-      dx: _wrap(lon),
-      dy: lat.clamp(-math.pi / 2, math.pi / 2),
-      targetImageIndex: currentIndex,
-      label: null,
-    );
-
-    final idx = _spots().length;
-    setState(() {
-      _spots().add(newHotspot);
-      addMode = false;
-    });
-
-    await _editJustAdded(idx);
-
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Hotspot added')));
-    }
-  }
-
-  Future<void> _editJustAdded(int idx) async {
-    final current = _spots()[idx];
-    final t = await _pickTargetImageIndex(
-      currentTarget: current.targetImageIndex,
-    );
-    if (t != null && mounted) {
-      setState(
-        () => _spots()[idx] = _spots()[idx].copyWith(targetImageIndex: t),
+  Future<void> _ensureDecoded(int i) async {
+    if (i < 0 || i >= widget.images.length) return;
+    if (_imgSizes[i] != null) return;
+    try {
+      final ui.Codec codec = await ui.instantiateImageCodec(
+        widget.images[i].bytes,
       );
-    }
-
-    final lbl = await _askLabel(initial: _spots()[idx].label ?? '');
-    if (lbl != null && mounted) {
-      setState(() => _spots()[idx] = _spots()[idx].copyWith(label: lbl));
+      final ui.FrameInfo frame = await codec.getNextFrame();
+      final ui.Image img = frame.image;
+      _imgSizes[i] = Size(img.width.toDouble(), img.height.toDouble());
+      img.dispose();
+      codec.dispose();
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('decode error: $e');
     }
   }
 
@@ -1008,7 +993,7 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
         title: const Text('Optional label'),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(hintText: 'e.g., “Go to Bed Area”'),
+          decoration: const InputDecoration(hintText: 'e.g., “Go to Door”'),
         ),
         actions: [
           TextButton(
@@ -1027,7 +1012,73 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
     );
   }
 
-  void _onMarkerTap(Hotspot h, int idx) async {
+  Future<void> _placeHotspotAt(double lonRad, double latRad) async {
+    final target = await _pickTargetImageIndex();
+    if (target == null) {
+      setState(() => _placing = false);
+      return;
+    }
+    final label = await _askLabel();
+
+    setState(() {
+      final list = _spots();
+      list.add(
+        AppHotspot(
+          dx: _wrap(lonRad),
+          dy: _clampLat(latRad),
+          targetImageIndex: target,
+          label: label,
+        ),
+      );
+      hotspotsByImageIndex[currentIndex] = List.from(list);
+      _placing = false;
+    });
+  }
+
+  Future<void> _placeHotspotAtCenter() async {
+    final target = await _pickTargetImageIndex();
+    if (target == null) {
+      setState(() => _placing = false);
+      return;
+    }
+    final label = await _askLabel();
+    const maxLon = math.pi / 2;
+    final clampedLon = _viewLon.clamp(-maxLon, maxLon).toDouble();
+    final clampedLat = _viewLat.clamp(-math.pi / 2, math.pi / 2).toDouble();
+
+    setState(() {
+      final list = _spots();
+      list.add(
+        AppHotspot(
+          dx: _wrap(clampedLon),
+          dy: _clampLat(clampedLat),
+          targetImageIndex: target,
+          label: label,
+        ),
+      );
+      hotspotsByImageIndex[currentIndex] = List.from(list);
+      _placing = false;
+    });
+  }
+
+  void _deleteHotspot(int idx) {
+    setState(() {
+      final list = _spots();
+      if (idx >= 0 && idx < list.length) list.removeAt(idx);
+      hotspotsByImageIndex[currentIndex] = List.from(list);
+    });
+  }
+
+  void _onHotspotPressed(AppHotspot h) {
+    setState(() {
+      currentIndex = h.targetImageIndex.clamp(0, widget.images.length - 1);
+      _ensureDecoded(currentIndex);
+      _viewLon = 0;
+      _viewLat = 0;
+    });
+  }
+
+  Future<void> _onHotspotLongPress(int idx, AppHotspot h) async {
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1035,19 +1086,19 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.directions),
+              leading: const Icon(Icons.navigation),
               title: const Text('Jump to target'),
               onTap: () => Navigator.pop(ctx, 'jump'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('Edit target'),
-              onTap: () => Navigator.pop(ctx, 'edit'),
             ),
             ListTile(
               leading: const Icon(Icons.label),
               title: const Text('Edit label'),
               onTap: () => Navigator.pop(ctx, 'label'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit),
+              title: const Text('Edit target'),
+              onTap: () => Navigator.pop(ctx, 'edit'),
             ),
             const Divider(height: 1),
             ListTile(
@@ -1063,34 +1114,43 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
     if (!mounted || action == null) return;
 
     if (action == 'jump') {
-      setState(
-        () => currentIndex = h.targetImageIndex.clamp(
-          0,
-          widget.images.length - 1,
-        ),
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Jumped to image ${currentIndex + 1}')),
-      );
+      _onHotspotPressed(h);
     } else if (action == 'delete') {
-      setState(() => _spots().removeAt(idx));
+      _deleteHotspot(idx);
     } else if (action == 'edit') {
-      final newTarget = await _pickTargetImageIndex(
-        currentTarget: h.targetImageIndex,
-      );
-      if (newTarget != null) {
-        setState(() => _spots()[idx] = h.copyWith(targetImageIndex: newTarget));
+      final t = await _pickTargetImageIndex(currentTarget: h.targetImageIndex);
+      if (t != null) {
+        final list = _spots();
+        list[idx] = h.copyWith(targetImageIndex: t);
+        setState(() => hotspotsByImageIndex[currentIndex] = List.from(list));
       }
     } else if (action == 'label') {
-      final newLabel = await _askLabel(initial: h.label ?? '');
-      setState(() => _spots()[idx] = h.copyWith(label: newLabel));
+      final lbl = await _askLabel(initial: h.label);
+      final list = _spots();
+      list[idx] = h.copyWith(label: lbl);
+      setState(() => hotspotsByImageIndex[currentIndex] = List.from(list));
     }
   }
 
+  String _fmtRad(num r) =>
+      '${r.toStringAsFixed(3)} rad (${(r * 180 / math.pi).toStringAsFixed(1)}°)';
+
   @override
   Widget build(BuildContext context) {
-    final double maxWidth = MediaQuery.of(context).size.width;
-    final double boxHeight = (maxWidth / 2.0).clamp(240.0, 460.0);
+    final clampedIndex = currentIndex.clamp(0, widget.images.length - 1);
+    if (clampedIndex != currentIndex) currentIndex = clampedIndex;
+    final spots = _spots();
+
+    final Size? natural = _imgSizes[currentIndex];
+    final double screenW = MediaQuery.of(context).size.width;
+    double height;
+    if (natural != null && natural.width > 0 && natural.height > 0) {
+      height = (screenW - 24) * (natural.height / natural.width);
+    } else {
+      height = 260;
+      _ensureDecoded(currentIndex);
+    }
+    height = height.clamp(200.0, 520.0);
 
     return Scaffold(
       appBar: AppBar(
@@ -1099,13 +1159,7 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
         ),
         actions: [
           TextButton(
-            onPressed: () {
-              final payload = <int, List<Hotspot>>{
-                for (final e in hotspotsByImageIndex.entries)
-                  e.key: [for (final h in e.value) h],
-              };
-              Navigator.pop(context, payload);
-            },
+            onPressed: () => Navigator.pop(context, hotspotsByImageIndex),
             child: const Text('Save', style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -1114,13 +1168,18 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
             child: Row(
               children: [
                 IconButton(
                   icon: const Icon(Icons.chevron_left),
                   onPressed: currentIndex > 0
-                      ? () => setState(() => currentIndex--)
+                      ? () => setState(() {
+                          currentIndex--;
+                          _ensureDecoded(currentIndex);
+                          _viewLon = 0;
+                          _viewLat = 0;
+                        })
                       : null,
                 ),
                 Expanded(
@@ -1142,129 +1201,222 @@ class _HotspotEditorPVState extends State<HotspotEditorPV> {
                 IconButton(
                   icon: const Icon(Icons.chevron_right),
                   onPressed: currentIndex < widget.images.length - 1
-                      ? () => setState(() => currentIndex++)
+                      ? () => setState(() {
+                          currentIndex++;
+                          _ensureDecoded(currentIndex);
+                          _viewLon = 0;
+                          _viewLat = 0;
+                        })
                       : null,
                 ),
               ],
             ),
           ),
+
+          // Panorama with native hotspots from package:panorama
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12.0),
-            child: Container(
-              height: boxHeight,
+            child: SizedBox(
+              height: height,
               width: double.infinity,
-              decoration: BoxDecoration(
-                color: Colors.black,
+              child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.black, width: 2),
-                boxShadow: const [
-                  BoxShadow(
-                    blurRadius: 8,
-                    offset: Offset(0, 2),
-                    color: Colors.black26,
+                child: Panorama(
+                  child: Image.memory(
+                    widget.images[currentIndex].bytes,
+                    fit: BoxFit.cover,
                   ),
-                ],
-              ),
-              child: ClipRect(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: PanoramaViewer(
-                        longitude: _viewLon,
-                        latitude: _viewLat.clamp(-1.2, 1.2),
-                        onViewChanged: (lon, lat, tilt) {
-                          setState(() {
-                            _viewLon = lon;
-                            _viewLat = lat;
-                            _viewTilt = tilt;
-                          });
-                        },
-                        onTap: (lon, lat, tilt) => _onTapPano(lon, lat, tilt),
-                        child: Image.memory(widget.images[currentIndex].bytes),
+
+                  // Place hotspot by tapping panorama when _placing == true
+                  onTap: (lonDeg, latDeg, tiltDeg) {
+                    if (!_placing) return;
+                    if (!(lonDeg.isFinite && latDeg.isFinite)) return;
+                    final lonRad = _rad(lonDeg);
+                    final latRad = _rad(latDeg);
+                    _placeHotspotAt(_wrap(lonRad), _clampLat(latRad));
+                  },
+
+                  onViewChanged: (lon, lat, tilt) {
+                    if (!(lon.isFinite && lat.isFinite)) return;
+                    const maxLon = math.pi / 2;
+                    final clampedLon = lon.clamp(-maxLon, maxLon).toDouble();
+                    final clampedLat = lat
+                        .clamp(-math.pi / 3, math.pi / 3)
+                        .toDouble();
+                    if (clampedLon != _viewLon || clampedLat != _viewLat) {
+                      if (!mounted) return;
+                      setState(() {
+                        _viewLon = clampedLon;
+                        _viewLat = clampedLat;
+                      });
+                    }
+                  },
+
+                  hotspots: [
+                    for (int i = 0; i < spots.length; i++)
+                      Hotspot(
+                        longitude: _deg(spots[i].dx),
+                        latitude: _deg(spots[i].dy),
+                        width: 56,
+                        height: 40,
+                        widget: GestureDetector(
+                          onTap: () => _onHotspotPressed(spots[i]),
+                          onLongPress: () => _onHotspotLongPress(i, spots[i]),
+                          child: _stickyButton(spots[i]),
+                        ),
                       ),
-                    ),
-                    // overlay markers projected to current view using FOV window
-                    Positioned.fill(
-                      child: LayoutBuilder(
-                        builder: (context, b) {
-                          final box = Size(b.maxWidth, b.maxHeight);
-                          final children = <Widget>[];
-                          final spots = _spots();
-                          for (int i = 0; i < spots.length; i++) {
-                            final h = spots[i];
-                            final pos = _projectToOverlay(box, h.dx, h.dy);
-                            if (pos == null) continue; // offscreen -> hide
-                            children.add(
-                              Positioned(
-                                left: pos.dx - 24,
-                                top: pos.dy - 24,
-                                child: GestureDetector(
-                                  onTap: () => _onMarkerTap(h, i),
-                                  child: _marker(h),
-                                ),
-                              ),
-                            );
-                          }
-                          return Stack(children: children);
-                        },
-                      ),
-                    ),
                   ],
                 ),
               ),
             ),
           ),
-          if (addMode)
+
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: spots.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No hotspots yet. Tap “Add Hotspot”, then tap the panorama.',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: spots.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (ctx, i) {
+                        final h = spots[i];
+                        return ListTile(
+                          leading: const Icon(Icons.place),
+                          title: Text(
+                            h.label?.isNotEmpty == true
+                                ? h.label!
+                                : 'Hotspot ${i + 1}',
+                          ),
+                          subtitle: Text(
+                            'Target: Image ${h.targetImageIndex + 1} • '
+                            'dx: ${_fmtRad(h.dx)} • dy: ${_fmtRad(h.dy)}',
+                          ),
+                          onTap: () => _onHotspotPressed(h),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (v) async {
+                              if (v == 'jump') {
+                                _onHotspotPressed(h);
+                              } else if (v == 'editTarget') {
+                                final t = await _pickTargetImageIndex(
+                                  currentTarget: h.targetImageIndex,
+                                );
+                                if (t != null) {
+                                  final list = _spots();
+                                  list[i] = h.copyWith(targetImageIndex: t);
+                                  setState(
+                                    () => hotspotsByImageIndex[currentIndex] =
+                                        List.from(list),
+                                  );
+                                }
+                              } else if (v == 'editLabel') {
+                                final lbl = await _askLabel(
+                                  initial: h.label ?? '',
+                                );
+                                final list = _spots();
+                                list[i] = h.copyWith(label: lbl);
+                                setState(
+                                  () => hotspotsByImageIndex[currentIndex] =
+                                      List.from(list),
+                                );
+                              } else if (v == 'delete') {
+                                _deleteHotspot(i);
+                              }
+                            },
+                            itemBuilder: (ctx) => const [
+                              PopupMenuItem(
+                                value: 'jump',
+                                child: Text('Jump to target'),
+                              ),
+                              PopupMenuItem(
+                                value: 'editTarget',
+                                child: Text('Edit target'),
+                              ),
+                              PopupMenuItem(
+                                value: 'editLabel',
+                                child: Text('Edit label'),
+                              ),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ),
+
+          if (_placing)
             Padding(
-              padding: const EdgeInsets.only(bottom: 12.0, top: 8),
+              padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Add mode: tap anywhere in the panorama to place a hotspot',
-                style: TextStyle(color: Colors.black.withOpacity(0.7)),
+                'Tap the panorama to place a hotspot.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _toggleAddMode,
-        backgroundColor: addMode ? Colors.red : const Color(0xFF00324E),
-        icon: Icon(addMode ? Icons.close : Icons.add_location_alt),
-        label: Text(addMode ? 'Cancel' : 'Add Hotspot'),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: SafeArea(
+        minimum: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (_placing)
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: FloatingActionButton.extended(
+                  onPressed: _placeHotspotAtCenter,
+                  backgroundColor: Colors.green[700],
+                  icon: const Icon(Icons.add_location_alt),
+                  label: const Text('Place at center'),
+                ),
+              ),
+            FloatingActionButton.extended(
+              onPressed: () {
+                setState(() => _placing = !_placing);
+                if (_placing) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Tap the panorama to place a hotspot.'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              backgroundColor: _placing ? Colors.red : const Color(0xFF00324E),
+              icon: Icon(_placing ? Icons.close : Icons.my_location),
+              label: Text(_placing ? 'Cancel placing' : 'Add Hotspot'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  // Big arrow marker so your eyes have no excuses
-  Widget _marker(Hotspot h) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if ((h.label ?? '').isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            margin: const EdgeInsets.only(bottom: 6),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.75),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              h.label!,
-              style: const TextStyle(color: Colors.white, fontSize: 11),
-            ),
-          ),
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            shape: BoxShape.circle,
-            boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black38)],
-            border: Border.all(color: Colors.black87, width: 2),
-          ),
-          child: const Center(
-            child: Icon(Icons.near_me, size: 26, color: Colors.deepPurple),
-          ),
-        ),
-      ],
+  // Sticky clickable button UI
+  Widget _stickyButton(AppHotspot h) {
+    final String label = (h.label == null || h.label!.isEmpty)
+        ? 'Go'
+        : h.label!;
+    return ElevatedButton.icon(
+      style: ElevatedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 6,
+        backgroundColor: const Color(0xFF3F51B5),
+        foregroundColor: Colors.white,
+      ),
+      onPressed: () => _onHotspotPressed(h),
+      icon: const Icon(Icons.place, size: 16),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
     );
   }
 }

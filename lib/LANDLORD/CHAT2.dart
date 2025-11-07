@@ -30,7 +30,10 @@ class _ListChatState extends State<ListChat> {
   bool _loading = true;
 
   RealtimeChannel? _channel;
-  bool _navigating = false; // <— tap guard
+  bool _navigating = false; // tap guard
+
+  // cache: tenant_id -> {name, avatarUrl}
+  final Map<String, Map<String, String>> _tenants = {};
 
   @override
   void initState() {
@@ -41,9 +44,7 @@ class _ListChatState extends State<ListChat> {
 
   @override
   void dispose() {
-    if (_channel != null) {
-      _sb.removeChannel(_channel!);
-    }
+    if (_channel != null) _sb.removeChannel(_channel!);
     super.dispose();
   }
 
@@ -66,29 +67,61 @@ class _ListChatState extends State<ListChat> {
         .eq('landlord_id', me)
         .order('last_time', ascending: false);
 
+    final rows = List<Map<String, dynamic>>.from(data ?? const []);
+
+    // Build tenant cache (name + avatar public URL from bucket)
+    final ids = <String>{
+      for (final r in rows)
+        if ((r['tenant_id'] ?? '').toString().isNotEmpty)
+          r['tenant_id'].toString(),
+    }.toList();
+
+    if (ids.isNotEmpty) {
+      final users = await _sb
+          .from('users')
+          .select('id, full_name, first_name, last_name')
+          .inFilter('id', ids);
+
+      for (final u in (users as List? ?? const [])) {
+        final id = (u['id'] ?? '').toString();
+        final full =
+            (u['full_name'] ??
+                    '${u['first_name'] ?? ''} ${u['last_name'] ?? ''}')
+                .toString()
+                .trim();
+
+        final storage = _sb.storage.from('avatars');
+        final jpg = storage.getPublicUrl('$id.jpg');
+        final png = storage.getPublicUrl('$id.png');
+        final avatarUrl = jpg.isNotEmpty ? jpg : png;
+
+        _tenants[id] = {
+          'name': full.isEmpty ? 'Tenant' : full,
+          'avatarUrl': avatarUrl,
+        };
+      }
+    }
+
     setState(() {
-      _rows = List<Map<String, dynamic>>.from(data);
+      _rows = rows;
       _loading = false;
     });
   }
 
   void _subscribe() {
     final ch = _sb.channel('inbox-landlord');
-
     ch.onPostgresChanges(
       event: PostgresChangeEvent.insert,
       schema: 'public',
       table: 'messages',
       callback: (_) => _load(),
     );
-
     ch.onPostgresChanges(
       event: PostgresChangeEvent.update,
       schema: 'public',
       table: 'messages',
       callback: (_) => _load(),
     );
-
     ch.subscribe();
     _channel = ch;
   }
@@ -157,7 +190,11 @@ class _ListChatState extends State<ListChat> {
       final s = searchQuery.toLowerCase();
       final msg = (row['last_message'] ?? '').toString().toLowerCase();
       final cid = (row['conversation_id'] ?? '').toString().toLowerCase();
-      return msg.contains(s) || cid.contains(s);
+      final tenantName =
+          _tenants[(row['tenant_id'] ?? '').toString()]?['name'] ?? '';
+      return msg.contains(s) ||
+          cid.contains(s) ||
+          tenantName.toLowerCase().contains(s);
     }).toList();
 
     return Scaffold(
@@ -210,6 +247,7 @@ class _ListChatState extends State<ListChat> {
                 itemBuilder: (context, index) {
                   final row = filtered[index];
                   final last = (row['last_message'] ?? '').toString();
+
                   DateTime? t;
                   if (row['last_time'] != null) {
                     try {
@@ -219,14 +257,27 @@ class _ListChatState extends State<ListChat> {
                   final unread =
                       int.tryParse('${row['unread_for_landlord'] ?? 0}') ?? 0;
 
+                  final tenantId = (row['tenant_id'] ?? '').toString();
+                  final info =
+                      _tenants[tenantId] ??
+                      const {'name': 'Tenant', 'avatarUrl': ''};
+                  final titleName = info['name'] ?? 'Tenant';
+                  final avatarUrl = info['avatarUrl'] ?? '';
+
+                  final avatar = (avatarUrl.startsWith('http'))
+                      ? NetworkImage(avatarUrl)
+                      : const AssetImage('assets/images/mykel.png')
+                            as ImageProvider;
+
                   return ListTile(
                     tileColor: const Color(0xFFD9D9D9),
-                    leading: const CircleAvatar(
+                    leading: CircleAvatar(
                       radius: 24,
-                      backgroundImage: AssetImage('assets/images/mykel.png'),
+                      backgroundImage: avatar,
+                      onBackgroundImageError: (_, __) {},
                     ),
                     title: Text(
-                      'Conversation • ${_formatWhen(t)}',
+                      '$titleName • ${_formatWhen(t)}',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     subtitle: Text(
@@ -240,7 +291,7 @@ class _ListChatState extends State<ListChat> {
                             : FontWeight.normal,
                       ),
                     ),
-                    trailing: (unread > 0)
+                    trailing: unread > 0
                         ? Container(
                             padding: const EdgeInsets.all(6),
                             decoration: const BoxDecoration(
@@ -275,8 +326,9 @@ class _ListChatState extends State<ListChat> {
                           MaterialPageRoute(
                             builder: (_) => LandlordChatScreen(
                               conversationId: cid,
-                              peerName: 'Tenant',
-                              peerImageAsset: 'assets/images/mykel.png',
+                              peerName: titleName,
+                              // pass as URL so chat screen treats it as network image
+                              peerAvatarUrl: avatarUrl,
                             ),
                           ),
                         );

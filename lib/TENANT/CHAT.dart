@@ -8,14 +8,14 @@ import 'package:smart_finder/services/chat_service.dart';
 class ChatScreenTenant extends StatefulWidget {
   final String conversationId;
   final String peerName;
-  final String peerImageAsset;
-  final String? landlordPhone; // optional, passed from startChatFromRoom
+  final String? peerAvatarUrl; // optional precomputed URL
+  final String? landlordPhone;
 
   const ChatScreenTenant({
     super.key,
     required this.conversationId,
     required this.peerName,
-    required this.peerImageAsset,
+    this.peerAvatarUrl,
     this.landlordPhone,
   });
 
@@ -31,9 +31,13 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
   late final ChatService _chat;
 
   String? _landlordPhone;
-  bool _fetchingPhone = false;
+  String? _avatarUrl; // resolved avatar (bucket)
+  int _avatarVersion = 0; // cache-buster after edits (if any)
 
-  Object? _editingMessageId; // <- works for UUID string or int
+  bool _fetchingPhone = false;
+  bool _fetchingHeader = false;
+
+  Object? _editingMessageId;
 
   @override
   void initState() {
@@ -41,13 +45,36 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
     _sb = Supabase.instance.client;
     _chat = ChatService(_sb);
 
-    // mark tenant read
     _chat.markRead(conversationId: widget.conversationId, isLandlord: false);
 
-    // prefer the phone passed from the navigation, otherwise fetch
     _landlordPhone = widget.landlordPhone;
+    _avatarUrl = widget.peerAvatarUrl;
+
+    // If either is missing, fetch from conversation parties & build avatar URL
     if (_landlordPhone == null || _landlordPhone!.trim().isEmpty) {
       _fetchPhone();
+    }
+    if (_avatarUrl == null || _avatarUrl!.trim().isEmpty) {
+      _fetchHeaderAvatar();
+    }
+  }
+
+  Future<void> _fetchHeaderAvatar() async {
+    if (_fetchingHeader) return;
+    setState(() => _fetchingHeader = true);
+    try {
+      final parties = await _chat.getConversationParties(widget.conversationId);
+      final landlordId = parties['landlord_id'] as String?;
+      if (landlordId != null) {
+        final storage = _sb.storage.from('avatars');
+        final jpg = storage.getPublicUrl('$landlordId.jpg');
+        // (If you commonly store .png, change the next line to png)
+        setState(() => _avatarUrl = '$jpg?v=$_avatarVersion');
+      }
+    } catch (_) {
+      // ignore, we’ll show placeholder avatar
+    } finally {
+      if (mounted) setState(() => _fetchingHeader = false);
     }
   }
 
@@ -130,19 +157,16 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
 
     final draft = _controller.text.trim();
 
-    // Primary: sms: (Android supports 'body')
     final smsUri = Uri(
       scheme: 'sms',
       path: phone,
       queryParameters: {if (draft.isNotEmpty) 'body': draft},
     );
-
     if (await canLaunchUrl(smsUri)) {
       await launchUrl(smsUri, mode: LaunchMode.externalApplication);
       return;
     }
 
-    // Fallback: smsto:
     final smsto = Uri(scheme: 'smsto', path: phone);
     if (await canLaunchUrl(smsto)) {
       await launchUrl(smsto, mode: LaunchMode.externalApplication);
@@ -166,7 +190,24 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
         foregroundColor: Colors.white,
         title: Row(
           children: [
-            CircleAvatar(backgroundImage: AssetImage(widget.peerImageAsset)),
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: Colors.white,
+              child: ClipOval(
+                child: SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: (_avatarUrl != null && _avatarUrl!.isNotEmpty)
+                      ? Image.network(
+                          _avatarUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) =>
+                              const Icon(Icons.person, color: Colors.grey),
+                        )
+                      : const Icon(Icons.person, color: Colors.grey),
+                ),
+              ),
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -196,8 +237,6 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                 final data = List<Map<String, dynamic>>.from(
                   snap.data ?? const [],
                 );
-
-                // make sure newest is at the bottom
                 data.sort((a, b) {
                   final aT =
                       DateTime.tryParse(a['created_at'] ?? '') ??
@@ -208,7 +247,6 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                   return aT.compareTo(bT);
                 });
 
-                // keep scrolled to bottom
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_listController.hasClients) {
                     _listController.jumpTo(
@@ -309,7 +347,7 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                                 );
                                 if (action == 'edit') {
                                   _startEditing(
-                                    m['id'], // <- UUID or int; both ok
+                                    m['id'],
                                     (m['body'] ?? '') as String,
                                   );
                                 } else if (action == 'delete') {
@@ -386,10 +424,9 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
             ),
           ),
 
-          // ---------- Inline edit banner like your screenshot ----------
           if (_editingMessageId != null)
             Container(
-              color: const Color(0xFF4A2B20), // warm brown-ish banner
+              color: const Color(0xFF4A2B20),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
                 children: [
@@ -402,7 +439,6 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                       ),
                     ),
                   ),
-                  // cancel X
                   InkWell(
                     onTap: _cancelEditing,
                     borderRadius: BorderRadius.circular(20),
@@ -413,7 +449,6 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // save ✓
                   InkWell(
                     onTap: _sendOrUpdate,
                     borderRadius: BorderRadius.circular(20),
@@ -427,14 +462,12 @@ class _ChatScreenTenantState extends State<ChatScreenTenant> {
               ),
             ),
 
-          // ---------- Input row ----------
           SafeArea(
             child: Container(
               color: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 children: [
-                  // SMS launcher
                   IconButton(
                     icon: const Icon(Icons.sms, color: Color(0xFF04395E)),
                     onPressed: _openSmsWithDraft,
