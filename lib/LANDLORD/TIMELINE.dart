@@ -43,23 +43,32 @@ class _TimelineState extends State<Timeline> {
   int _selectedIndex = 1; // Timeline tab
   bool _loading = true;
 
+  // Prevent overlapping fetches
+  bool _isFetching = false;
+
   // ================== NOTIFICATIONS ==================
   Future<void> _loadNotifications() async {
     if (_userId == null) return;
-    final data = await supabase
-        .from('notifications')
-        .select('id,title,body,type,is_read,created_at,room_id,user_id')
-        .eq('user_id', _userId!)
-        .order('created_at', ascending: false)
-        .limit(30);
+    try {
+      final data = await supabase
+          .from('notifications')
+          .select('id,title,body,type,is_read,created_at,room_id,user_id')
+          .eq('user_id', _userId!)
+          .order('created_at', ascending: false)
+          .limit(30);
 
-    _notifs
-      ..clear()
-      ..addAll((data as List).cast<Map<String, dynamic>>());
+      _notifs
+        ..clear()
+        ..addAll((data as List).cast<Map<String, dynamic>>());
 
-    _unread = _notifs.where((n) => (n['is_read'] as bool?) == false).length;
+      _unread = _notifs.where((n) => (n['is_read'] as bool?) == false).length;
 
-    if (mounted) setState(() {});
+      if (mounted) setState(() {});
+    } on PostgrestException catch (e) {
+      debugPrint('Load notifications failed: ${e.message}');
+    } catch (e) {
+      debugPrint('Load notifications error: $e');
+    }
   }
 
   void _subscribeNotifications() {
@@ -91,29 +100,37 @@ class _TimelineState extends State<Timeline> {
 
   Future<void> _markAllRead() async {
     if (_userId == null) return;
-    await supabase
-        .from('notifications')
-        .update({'is_read': true})
-        .eq('user_id', _userId!)
-        .eq('is_read', false);
+    try {
+      await supabase
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('user_id', _userId!)
+          .eq('is_read', false);
 
-    for (var i = 0; i < _notifs.length; i++) {
-      _notifs[i] = {..._notifs[i], 'is_read': true};
+      for (var i = 0; i < _notifs.length; i++) {
+        _notifs[i] = {..._notifs[i], 'is_read': true};
+      }
+      _unread = 0;
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('Mark all read failed: $e');
     }
-    _unread = 0;
-    if (mounted) setState(() {});
   }
 
   Future<void> _openNotification(Map<String, dynamic> n) async {
     if ((n['is_read'] as bool?) == false) {
-      await supabase
-          .from('notifications')
-          .update({'is_read': true})
-          .eq('id', n['id']);
-      final idx = _notifs.indexWhere((e) => e['id'] == n['id']);
-      if (idx != -1) _notifs[idx] = {..._notifs[idx], 'is_read': true};
-      if (_unread > 0) _unread -= 1;
-      if (mounted) setState(() {});
+      try {
+        await supabase
+            .from('notifications')
+            .update({'is_read': true})
+            .eq('id', n['id']);
+        final idx = _notifs.indexWhere((e) => e['id'] == n['id']);
+        if (idx != -1) _notifs[idx] = {..._notifs[idx], 'is_read': true};
+        if (_unread > 0) _unread -= 1;
+        if (mounted) setState(() {});
+      } catch (e) {
+        debugPrint('Mark single read failed: $e');
+      }
     }
 
     final roomId = (n['room_id'] as String?)?.trim();
@@ -125,7 +142,6 @@ class _TimelineState extends State<Timeline> {
     }
   }
 
-  // Restored: open notifications bottom sheet
   void _openNotifications() {
     showModalBottomSheet(
       context: context,
@@ -224,48 +240,113 @@ class _TimelineState extends State<Timeline> {
     super.dispose();
   }
 
+  // --------- FIX: Two-step fetch to avoid ambiguous embed ----------
   Future<void> _refreshFromSupabase() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) {
-      setState(() => _loading = false);
-      return;
+    if (_isFetching) return; // guard
+    _isFetching = true;
+    if (mounted) setState(() => _loading = true);
+
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) {
+        if (mounted) {
+          setState(() {
+            apartments = [];
+            currentPage = 0;
+          });
+        }
+        return;
+      }
+
+      // 1) Fetch rooms (no embedding)
+      final List rooms = await supabase
+          .from('rooms')
+          .select(
+            'id, apartment_name, location, monthly_payment, created_at, status',
+          )
+          .eq('landlord_id', user.id)
+          .order('created_at', ascending: false);
+
+      if (rooms.isEmpty) {
+        if (mounted) {
+          setState(() {
+            apartments = [];
+            _loading = false;
+            currentPage = 0;
+          });
+        }
+        return;
+      }
+
+      // 2) Fetch all images for those rooms, then choose first by sort_order
+      final List<String> roomIds = rooms
+          .map<String>((r) => r['id'] as String)
+          .toList();
+
+      final quoted = roomIds.map((id) => '"$id"').join(',');
+      final List imgs = await supabase
+          .from('room_images')
+          .select('room_id, image_url, sort_order')
+          .filter('room_id', 'in', '($quoted)');
+
+      final Map<String, Map<String, dynamic>> firstImageByRoom = {};
+      for (final img in imgs) {
+        final rid = img['room_id'] as String;
+        final so = (img['sort_order'] ?? 0) as int;
+        final current = firstImageByRoom[rid];
+        if (current == null || so < (current['sort_order'] ?? 1 << 30)) {
+          firstImageByRoom[rid] = {
+            'image_url': img['image_url'],
+            'sort_order': so,
+          };
+        }
+      }
+
+      // 3) Build UI items
+      final List<Map<String, dynamic>> items = [];
+      for (final r in rooms) {
+        final img = firstImageByRoom[r['id']];
+        items.add({
+          'id': r['id'],
+          'status': (r['status'] ?? 'pending').toString(),
+          'title': (r['apartment_name'] ?? 'Room').toString(),
+          'price': (r['monthly_payment'] ?? '').toString(),
+          'location': (r['location'] ?? '').toString(),
+          'imageUrl': img?['image_url'] as String?,
+          'tags': const [],
+        });
+      }
+
+      if (mounted) {
+        setState(() {
+          apartments = items;
+          currentPage = 0;
+        });
+      }
+    } on PostgrestException catch (e) {
+      debugPrint('Rooms/images query failed: ${e.message}');
+      if (mounted) {
+        setState(() => apartments = []);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Couldn’t load timeline: ${e.message}')),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('Rooms/images query threw: $e\n$st');
+      if (mounted) {
+        setState(() => apartments = []);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Couldn’t load timeline. Check connection or permissions.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      _isFetching = false;
+      if (mounted) setState(() => _loading = false);
     }
-    setState(() => _loading = true);
-
-    final List data = await supabase
-        .from('rooms')
-        .select(
-          'id, apartment_name, location, monthly_payment, created_at, status, room_images(image_url, sort_order)',
-        )
-        .eq('landlord_id', user.id)
-        .order('created_at', ascending: false);
-
-    final List<Map<String, dynamic>> items = [];
-    for (final r in data) {
-      final images = (r['room_images'] as List?) ?? [];
-      images.sort(
-        (a, b) => (a['sort_order'] ?? 0).compareTo(b['sort_order'] ?? 0),
-      );
-      final firstUrl = images.isNotEmpty
-          ? images.first['image_url'] as String?
-          : null;
-
-      items.add({
-        'id': r['id'],
-        'status': (r['status'] ?? 'pending').toString(),
-        'title': (r['apartment_name'] ?? 'Room').toString(),
-        'price': (r['monthly_payment'] ?? '').toString(),
-        'location': (r['location'] ?? '').toString(),
-        'imageUrl': firstUrl,
-        'tags': const [],
-      });
-    }
-
-    setState(() {
-      apartments = items;
-      _loading = false;
-      currentPage = 0;
-    });
   }
 
   void _onNavTap(int index) {
@@ -498,16 +579,6 @@ class _TimelineState extends State<Timeline> {
     final String? imageUrl = apartment['imageUrl'] as String?;
     final Uint8List? imageBytes = apartment['imageBytes'] as Uint8List?;
 
-    // Card/thumbnail → open ROOM INFO (primary flow)
-    void openRoomInfo() {
-      final roomId = apartment['id'] as String;
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => Roominfo(roomId: roomId)),
-      );
-    }
-
-    // Small pin icon → open Map (secondary)
     void openMap() {
       final roomId = apartment['id'] as String;
       Navigator.push(
@@ -516,11 +587,10 @@ class _TimelineState extends State<Timeline> {
       );
     }
 
-    // Card/thumbnail → open ROOM INFO
     Widget imageWidget;
     if (imageBytes != null) {
       imageWidget = GestureDetector(
-        onTap: openRoomInfo,
+        onTap: openMap,
         child: Image.memory(
           imageBytes,
           height: 160,
@@ -530,7 +600,7 @@ class _TimelineState extends State<Timeline> {
       );
     } else if (imageUrl != null && imageUrl.isNotEmpty) {
       imageWidget = GestureDetector(
-        onTap: openRoomInfo,
+        onTap: openMap,
         child: Image.network(
           imageUrl,
           height: 160,
@@ -540,7 +610,7 @@ class _TimelineState extends State<Timeline> {
       );
     } else {
       imageWidget = GestureDetector(
-        onTap: openRoomInfo,
+        onTap: openMap,
         child: Container(
           height: 160,
           width: double.infinity,
@@ -567,7 +637,7 @@ class _TimelineState extends State<Timeline> {
     }
 
     return GestureDetector(
-      onTap: openRoomInfo, // <— main card tap goes to ROOM INFO
+      onTap: openMap, // main card tap → GMAP
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFF2D4C5D),
@@ -690,15 +760,7 @@ class _TimelineState extends State<Timeline> {
                         child: const Text("Delete"),
                       ),
                       const Spacer(),
-                      // explicit map button
-                      IconButton(
-                        tooltip: 'Open Map',
-                        onPressed: openMap,
-                        icon: const Icon(
-                          Icons.location_on_outlined,
-                          color: Colors.white70,
-                        ),
-                      ),
+                      // Card tap already opens Gmap
                     ],
                   ),
                 ],

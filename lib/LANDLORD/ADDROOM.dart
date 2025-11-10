@@ -1,5 +1,8 @@
 // ADDROOM.dart
-// Uses package:panorama (NOT flutter_panorama). Provides Panorama, Hotspot, SensorControl.
+// Uses package:panorama (NOT flutter_panorama).
+// Hotspot Editor: horizontal-only pan with HARD STOPS, with “edge wall” overlays.
+// Max 180° window; if the source pano is narrower than 2:1, the window shrinks
+// so the limits align with the true image tips (no fake wrap).
 
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -83,6 +86,7 @@ class _AddroomState extends State<Addroom> {
   final List<LocalImage> roomImages = [];
   final ImagePicker _picker = ImagePicker();
 
+  /// hotspots grouped by panorama index (keeps rooms/panoramas separate)
   Map<int, List<AppHotspot>> hotspotsByImageIndex = {};
 
   final TextEditingController floorCtrl = TextEditingController();
@@ -678,10 +682,10 @@ class _AddroomState extends State<Addroom> {
         double lon = h.dx % (2 * math.pi);
         if (lon <= -math.pi) lon += 2 * math.pi;
         if (lon > math.pi) lon -= 2 * math.pi;
-        final double lat = _clamp(h.dy, -math.pi / 2, math.pi / 2);
 
+        // store normalized 0..1 (viewer can convert back)
         final double dxDb = _clamp((lon + math.pi) / (2 * math.pi), 0.0, 1.0);
-        final double dyDb = _clamp((lat + math.pi / 2) / math.pi, 0.0, 1.0);
+        const double dyDb = 0.0; // vertical locked
 
         await supabase.from('hotspots').insert({
           'room_id': roomId,
@@ -872,7 +876,7 @@ class _AddroomState extends State<Addroom> {
   }
 }
 
-/* ==================== Hotspot Editor ==================== */
+/* ==================== Hotspot Editor (with 180° hard yaw limits + edge wall) ==================== */
 
 class HotspotEditor extends StatefulWidget {
   final List<LocalImage> images;
@@ -892,11 +896,37 @@ class _HotspotEditorState extends State<HotspotEditor> {
   late Map<int, List<AppHotspot>> hotspotsByImageIndex;
   int currentIndex = 0;
 
-  double _viewLon = 0.0; // radians
-  double _viewLat = 0.0; // radians
 
+  // camera (radians)
+  double _viewLon = 0.0;
+
+  // vertical locked
+  static const double _minLat = 0.0;
+  static const double _maxLat = 0.0;
+
+  // optional “straight strip” (UI toggle only)
+  bool _useStripMode = false;
   bool _placing = false;
+
+  // cache normalized 2:1 previews + their content fraction
+  final Map<int, Future<Uint8List>> _displayBytesFutures = {};
   late List<Size?> _imgSizes;
+  final Map<int, double> _contentFracByImage = {}; // 0..1 of real content width
+
+  // tiny margin so we never hit the seam exactly
+  static const double _edgeEps = 0.01; // radians ~0.57°
+
+  // Maximum yaw span in radians (π = 180°).
+  static const double _maxSpanRad = math.pi;
+
+  // Edge “force field” visuals (radians)
+  static const double kEdgeFadeStartDeg = 12.0;
+  static final double kEdgeFadeStartRad = kEdgeFadeStartDeg * math.pi / 180.0;
+  static const double kEdgeFadeMaxOpacity = 0.85;
+  static const double kEdgeBlurSigma = 8.0;
+
+  // --- NEW: overlay key to compute tap x → yaw
+  final GlobalKey _viewerKey = GlobalKey();
 
   @override
   void initState() {
@@ -926,12 +956,22 @@ class _HotspotEditorState extends State<HotspotEditor> {
     return a;
   }
 
-  double _clampLat(double v) =>
-      v.isFinite ? v.clamp(-math.pi / 2, math.pi / 2).toDouble() : 0.0;
+  // Compute yaw limits for an image from its usable width fraction (centered)
+  double _minYawFor(int i) {
+    final f = (_contentFracByImage[i] ?? 1.0).clamp(0.0, 1.0);
+    final halfSpan = (_maxSpanRad / 2.0) * f;
+    return -halfSpan + _edgeEps;
+  }
+
+  double _maxYawFor(int i) {
+    final f = (_contentFracByImage[i] ?? 1.0).clamp(0.0, 1.0);
+    final halfSpan = (_maxSpanRad / 2.0) * f;
+    return halfSpan - _edgeEps;
+  }
 
   Future<void> _ensureDecoded(int i) async {
     if (i < 0 || i >= widget.images.length) return;
-    if (_imgSizes[i] != null) return;
+    if (_imgSizes[i] != null && _contentFracByImage.containsKey(i)) return;
     try {
       final ui.Codec codec = await ui.instantiateImageCodec(
         widget.images[i].bytes,
@@ -939,12 +979,74 @@ class _HotspotEditorState extends State<HotspotEditor> {
       final ui.FrameInfo frame = await codec.getNextFrame();
       final ui.Image img = frame.image;
       _imgSizes[i] = Size(img.width.toDouble(), img.height.toDouble());
+
+      // usable fraction for this image relative to a 2:1 canvas:
+      final w = img.width.toDouble();
+      final h = img.height.toDouble();
+      final targetW = h * 2.0;
+      final frac = (w / targetW).clamp(0.0, 1.0);
+      _contentFracByImage[i] = (w >= targetW) ? 1.0 : frac;
+
       img.dispose();
       codec.dispose();
       if (mounted) setState(() {});
-    } catch (e) {
-      debugPrint('decode error: $e');
-    }
+    } catch (_) {}
+  }
+
+  Future<Uint8List> _displayBytesFor(int i) {
+    return _displayBytesFutures.putIfAbsent(i, () async {
+      final Uint8List src = widget.images[i].bytes;
+      final ui.Codec codec = await ui.instantiateImageCodec(src);
+      final ui.FrameInfo frame = await codec.getNextFrame();
+      final ui.Image img = frame.image;
+      final int w = img.width, h = img.height;
+
+      final int targetW = h * 2; // 2:1 canvas
+      final int targetH = h;
+
+      final ui.PictureRecorder rec = ui.PictureRecorder();
+      final ui.Canvas canvas = ui.Canvas(rec);
+      final paint = ui.Paint();
+
+      // fill canvas (hidden by limits, but safe)
+      canvas.drawRect(
+        ui.Rect.fromLTWH(0, 0, targetW.toDouble(), targetH.toDouble()),
+        ui.Paint()..color = const Color(0xFF0E1116),
+      );
+
+      final double ar = w / h;
+      if (ar >= 2.0) {
+        // Source wider/equal → center-crop to 2:1
+        final double cropW = 2.0 * h;
+        final double left = (w - cropW) / 2.0;
+        canvas.drawImageRect(
+          img,
+          ui.Rect.fromLTWH(left, 0, cropW, h.toDouble()),
+          ui.Rect.fromLTWH(0, 0, targetW.toDouble(), targetH.toDouble()),
+          paint,
+        );
+        _contentFracByImage[i] = 1.0;
+      } else {
+        // Source narrower → center, record usable fraction
+        final double drawW = w.toDouble();
+        final double dx = (targetW - drawW) / 2.0;
+        canvas.drawImageRect(
+          img,
+          ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+          ui.Rect.fromLTWH(dx, 0, drawW, targetH.toDouble()),
+          paint,
+        );
+        _contentFracByImage[i] = (drawW / targetW).clamp(0.0, 1.0);
+      }
+
+      final ui.Picture pic = rec.endRecording();
+      final ui.Image out = await pic.toImage(targetW, targetH);
+      final bytes = (await out.toByteData(format: ui.ImageByteFormat.png))!;
+      out.dispose();
+      img.dispose();
+      codec.dispose();
+      return bytes.buffer.asUint8List();
+    });
   }
 
   Future<int?> _pickTargetImageIndex({int? currentTarget}) async {
@@ -962,7 +1064,15 @@ class _HotspotEditorState extends State<HotspotEditor> {
                 leading: SizedBox(
                   width: 48,
                   height: 48,
-                  child: widget.images[i].widget(fit: BoxFit.cover),
+                  child: FutureBuilder<Uint8List>(
+                    future: _displayBytesFor(i),
+                    builder: (context, snap) {
+                      if (!snap.hasData) {
+                        return const ColoredBox(color: Colors.black12);
+                      }
+                      return Image.memory(snap.data!, fit: BoxFit.cover);
+                    },
+                  ),
                 ),
                 title: Text(
                   'Image ${i + 1}${i == currentIndex ? " (current)" : ""}',
@@ -986,13 +1096,13 @@ class _HotspotEditorState extends State<HotspotEditor> {
   }
 
   Future<String?> _askLabel({String? initial}) async {
-    final controller = TextEditingController(text: initial ?? '');
+    final c = TextEditingController(text: initial ?? '');
     return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Optional label'),
         content: TextField(
-          controller: controller,
+          controller: c,
           decoration: const InputDecoration(hintText: 'e.g., “Go to Door”'),
         ),
         actions: [
@@ -1001,10 +1111,10 @@ class _HotspotEditorState extends State<HotspotEditor> {
             child: const Text('Skip'),
           ),
           ElevatedButton(
-            onPressed: () {
-              final t = controller.text.trim();
-              Navigator.pop(ctx, t.isEmpty ? null : t);
-            },
+            onPressed: () => Navigator.pop(
+              ctx,
+              c.text.trim().isEmpty ? null : c.text.trim(),
+            ),
             child: const Text('Save'),
           ),
         ],
@@ -1012,46 +1122,22 @@ class _HotspotEditorState extends State<HotspotEditor> {
     );
   }
 
-  Future<void> _placeHotspotAt(double lonRad, double latRad) async {
+  Future<void> _placeHotspotAt(double lonRad) async {
     final target = await _pickTargetImageIndex();
     if (target == null) {
       setState(() => _placing = false);
       return;
     }
     final label = await _askLabel();
-
     setState(() {
       final list = _spots();
-      list.add(
-        AppHotspot(
-          dx: _wrap(lonRad),
-          dy: _clampLat(latRad),
-          targetImageIndex: target,
-          label: label,
-        ),
-      );
-      hotspotsByImageIndex[currentIndex] = List.from(list);
-      _placing = false;
-    });
-  }
-
-  Future<void> _placeHotspotAtCenter() async {
-    final target = await _pickTargetImageIndex();
-    if (target == null) {
-      setState(() => _placing = false);
-      return;
-    }
-    final label = await _askLabel();
-    const maxLon = math.pi / 2;
-    final clampedLon = _viewLon.clamp(-maxLon, maxLon).toDouble();
-    final clampedLat = _viewLat.clamp(-math.pi / 2, math.pi / 2).toDouble();
-
-    setState(() {
-      final list = _spots();
+      final minYaw = _minYawFor(currentIndex);
+      final maxYaw = _maxYawFor(currentIndex);
+      final clampedLon = lonRad.clamp(minYaw, maxYaw).toDouble();
       list.add(
         AppHotspot(
           dx: _wrap(clampedLon),
-          dy: _clampLat(clampedLat),
+          dy: 0.0, // vertical locked
           targetImageIndex: target,
           label: label,
         ),
@@ -1060,6 +1146,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
       _placing = false;
     });
   }
+
+  Future<void> _placeHotspotAtCenter() => _placeHotspotAt(_viewLon);
 
   void _deleteHotspot(int idx) {
     setState(() {
@@ -1073,8 +1161,8 @@ class _HotspotEditorState extends State<HotspotEditor> {
     setState(() {
       currentIndex = h.targetImageIndex.clamp(0, widget.images.length - 1);
       _ensureDecoded(currentIndex);
-      _viewLon = 0;
-      _viewLat = 0;
+      final mid = (_minYawFor(currentIndex) + _maxYawFor(currentIndex)) / 2.0;
+      _viewLon = mid;
     });
   }
 
@@ -1110,9 +1198,7 @@ class _HotspotEditorState extends State<HotspotEditor> {
         ),
       ),
     );
-
     if (!mounted || action == null) return;
-
     if (action == 'jump') {
       _onHotspotPressed(h);
     } else if (action == 'delete') {
@@ -1132,6 +1218,19 @@ class _HotspotEditorState extends State<HotspotEditor> {
     }
   }
 
+  // Edge-wall opacity helpers (radians)
+  double _leftEdgeOpacity(double lon, double minYaw) {
+    final d = (lon - minYaw).clamp(0.0, kEdgeFadeStartRad);
+    final t = 1.0 - (d / kEdgeFadeStartRad);
+    return (t * kEdgeFadeMaxOpacity).clamp(0.0, kEdgeFadeMaxOpacity);
+  }
+
+  double _rightEdgeOpacity(double lon, double maxYaw) {
+    final d = (maxYaw - lon).clamp(0.0, kEdgeFadeStartRad);
+    final t = 1.0 - (d / kEdgeFadeStartRad);
+    return (t * kEdgeFadeMaxOpacity).clamp(0.0, kEdgeFadeMaxOpacity);
+  }
+
   String _fmtRad(num r) =>
       '${r.toStringAsFixed(3)} rad (${(r * 180 / math.pi).toStringAsFixed(1)}°)';
 
@@ -1141,151 +1240,313 @@ class _HotspotEditorState extends State<HotspotEditor> {
     if (clampedIndex != currentIndex) currentIndex = clampedIndex;
     final spots = _spots();
 
-    final Size? natural = _imgSizes[currentIndex];
-    final double screenW = MediaQuery.of(context).size.width;
-    double height;
-    if (natural != null && natural.width > 0 && natural.height > 0) {
-      height = (screenW - 24) * (natural.height / natural.width);
-    } else {
-      height = 260;
-      _ensureDecoded(currentIndex);
-    }
-    height = height.clamp(200.0, 520.0);
+    // fixed viewer height = 160
+    const double panoHeight = 160.0;
+
+    // dynamic yaw limits for current image
+    final minYaw = _minYawFor(currentIndex);
+    final maxYaw = _maxYawFor(currentIndex);
+
+    // keep the camera inside safe window
+    _viewLon = _viewLon.clamp(minYaw, maxYaw);
+
+    // precompute edge-wall opacity (for curved mode)
+    final leftOpacity = _leftEdgeOpacity(_viewLon, minYaw);
+    final rightOpacity = _rightEdgeOpacity(_viewLon, maxYaw);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'Hotspot Editor • Image ${currentIndex + 1}/${widget.images.length}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, hotspotsByImageIndex),
-            child: const Text('Save', style: TextStyle(color: Colors.white)),
-          ),
-        ],
         backgroundColor: const Color(0xFF00324E),
+        elevation: 0,
+        title: Row(
+          children: [
+            const SizedBox(width: 8),
+            const Text('Hotspot Editor'),
+            const Spacer(),
+            IconButton(
+              tooltip: _useStripMode
+                  ? 'Switch to curved panorama'
+                  : 'Switch to straight strip',
+              onPressed: () => setState(() => _useStripMode = !_useStripMode),
+              icon: Icon(
+                _useStripMode ? Icons.panorama_photosphere : Icons.straighten,
+              ),
+            ),
+          ],
+        ),
       ),
       body: Column(
         children: [
+          // ======= Viewer (curved or straight) =======
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_left),
-                  onPressed: currentIndex > 0
-                      ? () => setState(() {
-                          currentIndex--;
-                          _ensureDecoded(currentIndex);
-                          _viewLon = 0;
-                          _viewLat = 0;
-                        })
-                      : null,
-                ),
-                Expanded(
-                  child: Center(
-                    child: Wrap(
-                      spacing: 6,
-                      children: List.generate(
-                        widget.images.length,
-                        (i) => CircleAvatar(
-                          radius: 6,
-                          backgroundColor: i == currentIndex
-                              ? const Color(0xFF00324E)
-                              : Colors.grey.shade400,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right),
-                  onPressed: currentIndex < widget.images.length - 1
-                      ? () => setState(() {
-                          currentIndex++;
-                          _ensureDecoded(currentIndex);
-                          _viewLon = 0;
-                          _viewLat = 0;
-                        })
-                      : null,
-                ),
-              ],
-            ),
-          ),
-
-          // Panorama with native hotspots from package:panorama
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0),
-            child: SizedBox(
-              height: height,
-              width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Card(
+              color: const Color(0xFF0F1B2B),
+              elevation: 8,
+              shadowColor: Colors.black45,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Panorama(
-                  child: Image.memory(
-                    widget.images[currentIndex].bytes,
-                    fit: BoxFit.cover,
+                borderRadius: BorderRadius.circular(16),
+                child: SizedBox(
+                  key: _viewerKey,
+                  height: panoHeight,
+                  width: double.infinity,
+                  child: FutureBuilder<Uint8List>(
+                    future: _displayBytesFor(currentIndex),
+                    builder: (context, snap) {
+                      if (!snap.hasData) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+
+                      if (_useStripMode) {
+                        // STRAIGHT STRIP: flat image; horizontal scroll (clamped physics).
+                        return ScrollConfiguration(
+                          behavior: const ScrollBehavior().copyWith(
+                            scrollbars: false,
+                          ),
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const ClampingScrollPhysics(),
+                            child: SizedBox(
+                              height: panoHeight,
+                              child: Image.memory(
+                                snap.data!,
+                                height: panoHeight,
+                                fit: BoxFit.fitHeight,
+                                filterQuality: FilterQuality.high,
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+
+                      // CURVED PANORAMA with HARD yaw limits and edge walls
+                      return Stack(
+                        children: [
+                          Panorama(
+                            sensorControl: SensorControl.None,
+                            longitude: _deg(_viewLon),
+                            latitude: 0, // lock vertical
+                            animSpeed: 0.0, // no fling
+                            minLongitude: _deg(minYaw), // hard stops
+                            maxLongitude: _deg(maxYaw),
+                            minLatitude: _minLat,
+                            maxLatitude: _maxLat,
+                            minZoom: 0.9,
+                            maxZoom: 0.9,
+
+                            // ✅ Use the engine’s precise hit-test for yaw
+                            onTap: (lonDeg, latDeg, tiltDeg) {
+                              if (!_placing) return;
+                              if (!lonDeg.isFinite) return;
+                              final lonRad = _rad(lonDeg);
+                              final clamped = lonRad
+                                  .clamp(minYaw, maxYaw)
+                                  .toDouble();
+                              _placeHotspotAt(clamped);
+                            },
+
+                            onViewChanged: (lon, lat, tilt) {
+                              if (!lon.isFinite) return;
+                              final lonRad = (lon * math.pi / 180).clamp(
+                                minYaw,
+                                maxYaw,
+                              );
+                              if (lonRad != _viewLon && mounted) {
+                                setState(() => _viewLon = lonRad.toDouble());
+                              }
+                            },
+
+                            child: Image.memory(
+                              snap.data!,
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.high,
+                            ),
+
+                            hotspots: [
+                              for (int i = 0; i < spots.length; i++)
+                                Hotspot(
+                                  longitude: _deg(spots[i].dx),
+                                  latitude: 0,
+                                  width: 52,
+                                  height: 38,
+                                  widget: GestureDetector(
+                                    onTap: () => _onHotspotPressed(spots[i]),
+                                    onLongPress: () =>
+                                        _onHotspotLongPress(i, spots[i]),
+                                    child: _stickyButton(spots[i]),
+                                  ),
+                                ),
+                            ],
+                          ),
+
+                          // ⟵ TAP-TO-PLACE overlay: pixel x → exact yaw
+                      
+
+                          // Edge “force field” overlays
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 32,
+                                    child: AnimatedOpacity(
+                                      opacity: leftOpacity,
+                                      duration: const Duration(
+                                        milliseconds: 80,
+                                      ),
+                                      child: ClipRect(
+                                        child: BackdropFilter(
+                                          filter: ui.ImageFilter.blur(
+                                            sigmaX: kEdgeBlurSigma,
+                                            sigmaY: kEdgeBlurSigma,
+                                          ),
+                                          child: Container(
+                                            decoration: const BoxDecoration(
+                                              gradient: LinearGradient(
+                                                begin: Alignment.centerLeft,
+                                                end: Alignment.centerRight,
+                                                colors: [
+                                                  Colors.black45,
+                                                  Colors.transparent,
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const Expanded(child: SizedBox()),
+                                  SizedBox(
+                                    width: 32,
+                                    child: AnimatedOpacity(
+                                      opacity: rightOpacity,
+                                      duration: const Duration(
+                                        milliseconds: 80,
+                                      ),
+                                      child: ClipRect(
+                                        child: BackdropFilter(
+                                          filter: ui.ImageFilter.blur(
+                                            sigmaX: kEdgeBlurSigma,
+                                            sigmaY: kEdgeBlurSigma,
+                                          ),
+                                          child: Container(
+                                            decoration: const BoxDecoration(
+                                              gradient: LinearGradient(
+                                                begin: Alignment.centerRight,
+                                                end: Alignment.centerLeft,
+                                                colors: [
+                                                  Colors.black45,
+                                                  Colors.transparent,
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
-
-                  // Place hotspot by tapping panorama when _placing == true
-                  onTap: (lonDeg, latDeg, tiltDeg) {
-                    if (!_placing) return;
-                    if (!(lonDeg.isFinite && latDeg.isFinite)) return;
-                    final lonRad = _rad(lonDeg);
-                    final latRad = _rad(latDeg);
-                    _placeHotspotAt(_wrap(lonRad), _clampLat(latRad));
-                  },
-
-                  onViewChanged: (lon, lat, tilt) {
-                    if (!(lon.isFinite && lat.isFinite)) return;
-                    const maxLon = math.pi / 2;
-                    final clampedLon = lon.clamp(-maxLon, maxLon).toDouble();
-                    final clampedLat = lat
-                        .clamp(-math.pi / 3, math.pi / 3)
-                        .toDouble();
-                    if (clampedLon != _viewLon || clampedLat != _viewLat) {
-                      if (!mounted) return;
-                      setState(() {
-                        _viewLon = clampedLon;
-                        _viewLat = clampedLat;
-                      });
-                    }
-                  },
-
-                  hotspots: [
-                    for (int i = 0; i < spots.length; i++)
-                      Hotspot(
-                        longitude: _deg(spots[i].dx),
-                        latitude: _deg(spots[i].dy),
-                        width: 56,
-                        height: 40,
-                        widget: GestureDetector(
-                          onTap: () => _onHotspotPressed(spots[i]),
-                          onLongPress: () => _onHotspotLongPress(i, spots[i]),
-                          child: _stickyButton(spots[i]),
-                        ),
-                      ),
-                  ],
                 ),
               ),
             ),
           ),
 
+          // ======= Thumbnails =======
+          SizedBox(
+            height: 86,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              scrollDirection: Axis.horizontal,
+              itemCount: widget.images.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (ctx, i) {
+                final selected = i == currentIndex;
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      currentIndex = i;
+                      _ensureDecoded(currentIndex);
+                      final center =
+                          (_minYawFor(currentIndex) +
+                              _maxYawFor(currentIndex)) /
+                          2.0;
+                      _viewLon = center;
+                    });
+                  },
+                  child: FutureBuilder<Uint8List>(
+                    future: _displayBytesFor(i),
+                    builder: (context, snap) {
+                      Widget child;
+                      if (!snap.hasData) {
+                        child = const SizedBox(width: 120, height: 70);
+                      } else {
+                        child = Image.memory(
+                          snap.data!,
+                          width: 120,
+                          height: 70,
+                          fit: BoxFit.cover,
+                          filterQuality: FilterQuality.high,
+                        );
+                      }
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        width: 130,
+                        height: 74,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(
+                                selected ? .25 : .12,
+                              ),
+                              blurRadius: selected ? 8 : 4,
+                            ),
+                          ],
+                          border: Border.all(
+                            color: selected
+                                ? const Color(0xFF3F8EF1)
+                                : Colors.black26,
+                            width: selected ? 2.2 : 1.0,
+                          ),
+                          color: Colors.black12,
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: child,
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // ======= Hotspot list =======
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-              child: spots.isEmpty
+              child: _spots().isEmpty
                   ? const Center(
                       child: Text(
-                        'No hotspots yet. Tap “Add Hotspot”, then tap the panorama.',
+                        'No hotspots yet. Tap “Add Hotspot”, then tap the viewer.',
                         style: TextStyle(color: Colors.black54),
                       ),
                     )
                   : ListView.separated(
-                      itemCount: spots.length,
+                      itemCount: _spots().length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (ctx, i) {
-                        final h = spots[i];
+                        final h = _spots()[i];
                         return ListTile(
                           leading: const Icon(Icons.place),
                           title: Text(
@@ -1294,8 +1555,7 @@ class _HotspotEditorState extends State<HotspotEditor> {
                                 : 'Hotspot ${i + 1}',
                           ),
                           subtitle: Text(
-                            'Target: Image ${h.targetImageIndex + 1} • '
-                            'dx: ${_fmtRad(h.dx)} • dy: ${_fmtRad(h.dy)}',
+                            'Target: Image ${h.targetImageIndex + 1} • dx: ${_fmtRad(h.dx)} • dy: 0',
                           ),
                           onTap: () => _onHotspotPressed(h),
                           trailing: PopupMenuButton<String>(
@@ -1315,9 +1575,7 @@ class _HotspotEditorState extends State<HotspotEditor> {
                                   );
                                 }
                               } else if (v == 'editLabel') {
-                                final lbl = await _askLabel(
-                                  initial: h.label ?? '',
-                                );
+                                final lbl = await _askLabel(initial: h.label);
                                 final list = _spots();
                                 list[i] = h.copyWith(label: lbl);
                                 setState(
@@ -1353,59 +1611,58 @@ class _HotspotEditorState extends State<HotspotEditor> {
             ),
           ),
 
-          if (_placing)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                'Tap the panorama to place a hotspot.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-        ],
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: SafeArea(
-        minimum: const EdgeInsets.only(bottom: 12),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (_placing)
-              Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: FloatingActionButton.extended(
-                  onPressed: _placeHotspotAtCenter,
-                  backgroundColor: Colors.green[700],
-                  icon: const Icon(Icons.add_location_alt),
-                  label: const Text('Place at center'),
-                ),
-              ),
-            FloatingActionButton.extended(
-              onPressed: () {
-                setState(() => _placing = !_placing);
-                if (_placing) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Tap the panorama to place a hotspot.'),
-                      duration: Duration(seconds: 2),
+          // ======= Bottom bar =======
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() => _placing = !_placing);
+                        if (_placing) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Tap the viewer to place a hotspot.',
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                      icon: Icon(_placing ? Icons.close : Icons.my_location),
+                      label: Text(_placing ? 'Cancel placing' : 'Add Hotspot'),
                     ),
-                  );
-                }
-              },
-              backgroundColor: _placing ? Colors.red : const Color(0xFF00324E),
-              icon: Icon(_placing ? Icons.close : Icons.my_location),
-              label: Text(_placing ? 'Cancel placing' : 'Add Hotspot'),
+                  ),
+                  const SizedBox(width: 10),
+                  if (_placing)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 10),
+                      child: ElevatedButton.icon(
+                        onPressed: _placeHotspotAtCenter,
+                        icon: const Icon(Icons.add_location_alt),
+                        label: const Text('Place at center'),
+                      ),
+                    ),
+                  ElevatedButton(
+                    onPressed: () =>
+                        Navigator.pop(context, hotspotsByImageIndex),
+                    child: const Text('Save'),
+                  ),
+                ],
+              ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  // Sticky clickable button UI
+  // Sticky clickable UI
   Widget _stickyButton(AppHotspot h) {
-    final String label = (h.label == null || h.label!.isEmpty)
-        ? 'Go'
-        : h.label!;
+    final label = (h.label == null || h.label!.isEmpty) ? 'Go' : h.label!;
     return ElevatedButton.icon(
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),

@@ -101,6 +101,28 @@ class _RoominfoState extends State<Roominfo> {
 
   String _floorText(int? floor) => floor == null ? 'Floor —' : 'Floor $floor';
 
+  // Reusable thumbnail
+  Widget _thumb(String url) {
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        return Container(
+          color: Colors.black12,
+          alignment: Alignment.center,
+          child: const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        );
+      },
+      errorBuilder: (_, __, ___) =>
+          const Center(child: Icon(Icons.broken_image)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = _room?['apartment_name'] ?? 'Room Info';
@@ -141,7 +163,7 @@ class _RoominfoState extends State<Roominfo> {
               padding: const EdgeInsets.all(16.0),
               child: Column(
                 children: [
-                  _imageCarousel(context),
+                  _imageStrip(context),
                   const SizedBox(height: 20),
                   _boxRow(
                     leftIcon: Icons.apartment,
@@ -188,7 +210,8 @@ class _RoominfoState extends State<Roominfo> {
     );
   }
 
-  Widget _imageCarousel(BuildContext context) {
+  /// Responsive, non-stretch horizontal strip
+  Widget _imageStrip(BuildContext context) {
     if (_images.isEmpty) {
       return const SizedBox(
         height: 120,
@@ -197,74 +220,71 @@ class _RoominfoState extends State<Roominfo> {
     }
 
     return SizedBox(
-      height: 120,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: List.generate(_images.length, (index) {
+      height: 116,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        itemCount: _images.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (_, index) {
           final isHovered = index == _hoveredIndex;
           final isSelected = index == _selectedIndex;
           final url = _images[index]['image_url'] as String;
 
-          return Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4.0),
-              child: MouseRegion(
-                onEnter: (_) => setState(() => _hoveredIndex = index),
-                onExit: (_) => setState(() => _hoveredIndex = -1),
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _selectedIndex = index;
-                      _hoveredIndex = index;
-                    });
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => Tour(
-                          initialIndex: index,
-                          roomId: widget.roomId, // pass it on landlord side
-                          titleHint: _room?['apartment_name'] as String?,
-                          addressHint: _room?['location'] as String?,
-                          monthlyHint: (_room?['monthly_payment'] as num?)
-                              ?.toDouble(),
-                        ),
-                      ),
-                    );
-                  },
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isHovered || isSelected
-                            ? const Color.fromARGB(255, 27, 70, 120)
-                            : const Color.fromARGB(255, 118, 118, 118),
-                        width: 3,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.08),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
+          void openTour() {
+            if (!mounted) return;
+            _selectedIndex = index; // avoid setState race before push
+            Navigator.push(
+              context,
+              PageRouteBuilder(
+                pageBuilder: (_, __, ___) => Tour(
+                  initialIndex: index,
+                  roomId: widget.roomId,
+                  titleHint: _room?['apartment_name'] as String?,
+                  addressHint: _room?['location'] as String?,
+                  monthlyHint: (_room?['monthly_payment'] as num?)?.toDouble(),
+                ),
+                transitionsBuilder: (_, a, __, child) =>
+                    FadeTransition(opacity: a, child: child),
+              ),
+            );
+          }
+
+          return MouseRegion(
+            onEnter: (_) => setState(() => _hoveredIndex = index),
+            onExit: (_) => setState(() => _hoveredIndex = -1),
+            child: GestureDetector(
+              onTap: openTour,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 180,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: (isHovered || isSelected)
+                        ? const Color.fromARGB(255, 27, 70, 120)
+                        : const Color.fromARGB(255, 118, 118, 118),
+                    width: 3,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 6,
+                      offset: const Offset(0, 3),
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        url,
-                        width: 150,
-                        height: 150,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            const Center(child: Icon(Icons.broken_image)),
-                      ),
-                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(9),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9, // keeps images proportional
+                    child: _thumb(url),
                   ),
                 ),
               ),
             ),
           );
-        }),
+        },
       ),
     );
   }

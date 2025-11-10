@@ -43,7 +43,8 @@ dependencies:
   geocoding: ^4.0.0  # reverse geocode lat/lng -> street address
   geolocator: ^10.1.0
   maplibre_gl: ^0.24.1
-
+  
+  
 
 
   # The following adds the Cupertino Icons font to your application.
