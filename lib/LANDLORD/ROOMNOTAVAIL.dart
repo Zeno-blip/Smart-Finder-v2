@@ -1,4 +1,4 @@
-// roomnotavail.dart
+// lib/LANDLORD/roomnotavail.dart
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -218,8 +218,8 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
                         roomId: roomId,
                         titleHint: (room['apartment_name'] as String?),
                         addressHint: (room['location'] as String?),
-                        monthlyHint: (room['monthly_payment'] as num?)
-                            ?.toDouble(),
+                        monthlyHint:
+                            (room['monthly_payment'] as num?)?.toDouble(),
                       ),
                     ),
                   );
@@ -247,6 +247,7 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
     );
   }
 
+  /// INFO BOXES – also using room_name on the door pill
   Widget _infoBoxes(Map<String, dynamic> room) {
     return Column(
       children: [
@@ -259,7 +260,7 @@ class _RoomNotAvailableState extends State<RoomNotAvailable> {
         ),
         _infoTile(
           FontAwesomeIcons.doorClosed,
-          room['id']?.toString() ?? "—",
+          (room['room_name'] ?? '—').toString(),   // <--- ROOM NAME (e.g. L204)
           Icons.attach_money,
           "₱${room['advance_deposit'] ?? '—'}",
           iconSize: 28.0,

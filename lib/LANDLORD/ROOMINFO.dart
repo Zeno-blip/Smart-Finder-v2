@@ -36,7 +36,8 @@ class _RoominfoState extends State<Roominfo> {
       final room = await supabase
           .from('rooms')
           .select(
-            'id, floor_number, apartment_name, location, monthly_payment, advance_deposit, description',
+            // 👈 include room_name here
+            'id, floor_number, apartment_name, room_name, location, monthly_payment, advance_deposit, description',
           )
           .eq('id', widget.roomId)
           .single();
@@ -173,7 +174,8 @@ class _RoominfoState extends State<Roominfo> {
                   ),
                   _boxRow(
                     leftIcon: FontAwesomeIcons.doorClosed,
-                    leftText: _room?['apartment_name'] ?? '—',
+                    // 👇 show ROOM NAME here (e.g. L204)
+                    leftText: (_room?['room_name'] ?? '—').toString(),
                     rightIcon: Icons.attach_money,
                     rightText: _money(_room?['advance_deposit']),
                   ),
@@ -193,6 +195,7 @@ class _RoominfoState extends State<Roominfo> {
                         ? '—'
                         : _preferences.join(', '),
                   ),
+                  // 👇 Apartment name stays here
                   _apartmentBox(_room?['apartment_name'] ?? '—'),
                   const SizedBox(height: 20),
                   _roomDetailsBox(

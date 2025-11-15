@@ -168,7 +168,7 @@ class _RoomAvailableState extends State<RoomAvailable> {
             const SizedBox(height: 20),
             _roomDetailsBox(room),
             const SizedBox(height: 20),
-            _actionButtons(room), // <- updated to hide Add Tenant when occupied
+            _actionButtons(room),
           ],
         ),
       ),
@@ -245,6 +245,7 @@ class _RoomAvailableState extends State<RoomAvailable> {
     );
   }
 
+  /// INFO BOXES – now using room_name on the door pill
   Widget _infoBoxes(Map<String, dynamic> room) {
     return Column(
       children: [
@@ -257,7 +258,7 @@ class _RoomAvailableState extends State<RoomAvailable> {
         ),
         _infoTile(
           FontAwesomeIcons.doorClosed,
-          room['id']?.toString() ?? "—",
+          (room['room_name'] ?? '—').toString(), // <--- ROOM NAME (e.g. L204)
           Icons.attach_money,
           "₱${room['advance_deposit'] ?? '—'}",
           iconSize: 28.0,
@@ -381,7 +382,7 @@ class _RoomAvailableState extends State<RoomAvailable> {
                   builder: (_) => _TenantPicker(
                     supabase: _sb,
                     landlordId: landlordId,
-                    roomId: roomId, // <-- pass roomId here
+                    roomId: roomId, // pass roomId here
                   ),
                 );
               },
@@ -472,7 +473,7 @@ class _InfoBox extends StatelessWidget {
 class _TenantPicker extends StatefulWidget {
   final SupabaseClient supabase;
   final String landlordId; // auth.users.id of landlord
-  final String roomId; // <-- NEW: which room we're assigning to
+  final String roomId; // which room we're assigning to
 
   const _TenantPicker({
     required this.supabase,
@@ -804,7 +805,7 @@ class _TenantPickerState extends State<_TenantPicker> {
                               .update({'availability_status': 'not_available'})
                               .eq('id', widget.roomId);
 
-                          // 2) (Optional) If you have a room_tenants table, insert here:
+                          // 2) Optional: insert into room_tenants
                           // await widget.supabase.from('room_tenants').insert({
                           //   'room_id': widget.roomId,
                           //   'tenant_user_id': sel["id"],
