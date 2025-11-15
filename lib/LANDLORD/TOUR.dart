@@ -1,28 +1,159 @@
 // LANDLORD/TOUR.dart
-// Hero panorama (non-360) with HARD stops, smooth pan, edge “walls”,
-// larger clickable hotspots, and a labeled thumbnail strip below the pano.
-// Images are normalized to 2:1 (blur padding) so nothing looks stretched.
-//
-// Key tweaks vs your last version:
-// - Bigger hero pano with fixed height and rounded corners
-// - kFixedZoom = 0.80 (zoomed out a little)
-// - Larger hotspots and labels
-// - Thumbnail strip with labels to jump between views
-// - All original protections: no wrap, edge force-field, smooth easing
+// Hero panorama (non-360) with HARD stops, smooth pan on a crescent arc,
+// edge “walls”, clickable hotspots, labeled thumbnails from hotspot labels,
+// byte-saving normalization, prefetching, and tiny preview.
 
+import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui show ImageFilter;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:panorama/panorama.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+import 'package:panorama/panorama.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:smart_finder/LANDLORD/ROOMINFO.dart';
+
+/* ============================== LRU cache ============================== */
+
+class _LruBytes {
+  final int capacity;
+  final _map = LinkedHashMap<int, Uint8List>();
+
+  _LruBytes({this.capacity = 6});
+
+  Uint8List? get(int k) {
+    final v = _map.remove(k);
+    if (v != null) _map[k] = v; // reinsert to mark as most recent
+    return v;
+  }
+
+  void set(int k, Uint8List v) {
+    if (_map.containsKey(k)) _map.remove(k);
+    _map[k] = v;
+    if (_map.length > capacity) {
+      _map.remove(_map.keys.first);
+    }
+  }
+
+  void clear() => _map.clear();
+}
+
+/* =============================== Worker =============================== */
+
+class _NormalizeArgs {
+  final Uint8List bytes;
+  final int maxW;
+  final int maxH;
+  final int blurRadius;
+  final int quality; // 75-95
+
+  _NormalizeArgs({
+    required this.bytes,
+    required this.maxW,
+    required this.maxH,
+    required this.blurRadius,
+    required this.quality,
+  });
+}
+
+/// Normalize an image to exact 2:1 WITHOUT stretching the subject:
+/// - If ratio ~= 2:1, just downscale to <= maxW×maxH and re-encode
+/// - Else add blurred bands (left-right or top-bottom) to get 2:1 canvas
+/// Re-encode to JPEG for broad support.
+Future<Uint8List> _normalize2to1Worker(_NormalizeArgs a) async {
+  final src0 = img.decodeImage(a.bytes);
+  if (src0 == null) throw Exception('Cannot decode image');
+
+  // Cap size to reduce work before composing (keeps clarity)
+  final capped = img.copyResize(
+    src0,
+    width: src0.width > a.maxW ? a.maxW : src0.width,
+    height: src0.height > a.maxH ? a.maxH : src0.height,
+    interpolation: img.Interpolation.linear,
+  );
+
+  final w = capped.width, h = capped.height;
+  final ratio = w / h;
+  const eps = 0.01;
+
+  // Already ~2:1 → standardize + return
+  if ((ratio - 2.0).abs() < eps) {
+    return Uint8List.fromList(img.encodeJpg(capped, quality: a.quality));
+  }
+
+  // Make a 2:1 canvas around the subject using blur padding
+  late final int outW, outH;
+  int dx = 0, dy = 0;
+
+  if (ratio < 2.0) {
+    // narrow/tall → add left & right bands
+    outW = 2 * h;
+    outH = h;
+    dx = ((outW - w) / 2).round();
+    dy = 0;
+  } else {
+    // wide/short → add top & bottom bands
+    outW = w;
+    outH = (w / 2).round();
+    dx = 0;
+    dy = ((outH - h) / 2).round();
+  }
+
+  // Build blurred background
+  final baseForBlur = img.copyResizeCropSquare(
+    capped,
+    size: math.min(outW, outH),
+  );
+
+  final blurred = img.gaussianBlur(
+    img.copyResize(baseForBlur, width: outW, height: outH),
+    radius: a.blurRadius,
+  );
+
+  img.compositeImage(blurred, capped, dstX: dx, dstY: dy);
+  return Uint8List.fromList(img.encodeJpg(blurred, quality: a.quality));
+}
+
+/* ============================== Net utils ============================= */
+
+final http.Client _http = http.Client();
+
+Future<Uint8List> _fetchBytesWithRetry(
+  String url, {
+  Duration timeout = const Duration(seconds: 8),
+  int retries = 1,
+}) async {
+  int attempts = 0;
+  while (true) {
+    attempts++;
+    try {
+      final resp = await _http
+          .get(Uri.parse(url))
+          .timeout(
+            timeout,
+            onTimeout: () {
+              throw TimeoutException('Network timeout');
+            },
+          );
+      if (resp.statusCode == 200 && resp.bodyBytes.isNotEmpty) {
+        return resp.bodyBytes;
+      }
+      throw Exception('HTTP ${resp.statusCode}');
+    } catch (e) {
+      if (attempts > 1 + retries) rethrow;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+  }
+}
+
+/* ============================== Screen =============================== */
 
 class LTour extends StatefulWidget {
   final int initialIndex;
@@ -50,9 +181,11 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
   final Map<String, int> _indexById = {};
   final Map<int, List<_HS>> _hotspotsByIndex = {};
 
-  // Pano cache
-  int _currentIndex = 0;
-  final Map<int, Uint8List> _panoCache = {};
+  // Derived names for thumbnails (from hotspot labels that point to each image)
+  final Map<int, String> _nameByIndex = {};
+
+  // Cache
+  final _LruBytes _panoCache = _LruBytes(capacity: 6);
   Uint8List? _currentBytes;
 
   // UI state
@@ -66,23 +199,23 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
   num? _monthly, _advance;
   int? _floor;
 
-  // -------- VIEW WINDOW (tighter span + a little more zoomed out) --------
-  static const double kTotalSpanDeg = 210.0; // keep calm edges
+  // Window: 210° calm span, hard stops, slight eps
+  static const double kTotalSpanDeg = 210.0;
   static const double _edgeEpsDeg = 0.6;
   double get _minYawDeg => -kTotalSpanDeg / 2 + _edgeEpsDeg;
   double get _maxYawDeg => kTotalSpanDeg / 2 - _edgeEpsDeg;
 
-  // Zoom: smaller number = farther. 0.80 gives a calmer, wider feel.
-  static const double kFixedZoom = 0.80;
+  // Zoom (fixed): smaller → farther. (Backed off more from 0.80 → 0.55)
+  static const double kFixedZoom = 0.55;
 
-  // Edge visuals (walls)
+  // Edge visuals
   static const double kEdgeFadeStartDeg = 10.0;
   static const double kEdgeFadeMaxOpacity = 0.85;
   static const double kEdgeBlurSigma = 10.0;
 
-  // Optional concave bow (disabled)
-  static const double kCurveMaxDeg = 0.0;
-  static const double kCurvePower = 1.2;
+  // Enable vertical bow for a crescent-like path
+  static const double kCurveMaxDeg = 8.0; // peak vertical offset (deg)
+  static const double kCurvePower = 1.25; // 1.0–1.6 adjusts the arc profile
 
   // Camera (degrees)
   double _viewLonDeg = 0.0;
@@ -98,10 +231,13 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
   // Haptic flags
   bool _edgeBuzzedLeft = false, _edgeBuzzedRight = false;
 
+  // Index
+  int _currentIndex = 0;
+
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex;
+    _currentIndex = widget.initialIndex.clamp(0, 9999);
     _applyYaw(0);
 
     _ticker = createTicker((_) {
@@ -109,7 +245,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
       if (diff.abs() < 0.01) {
         _viewLonDeg = _targetLonDeg;
       } else {
-        _viewLonDeg += diff * 0.18; // smoothing factor
+        _viewLonDeg += diff * 0.18; // easing factor
       }
       _viewLatDeg = _curvedLatitudeForYaw(_viewLonDeg);
       if (mounted) setState(() {});
@@ -129,7 +265,8 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
-  // ---------------- Realtime ----------------
+  /* ---------------------------- Realtime ---------------------------- */
+
   void _subscribeRealtime() {
     _chImages = _sb
         .channel('room_images_${widget.roomId}')
@@ -185,8 +322,9 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
           .eq('room_id', widget.roomId)
           .order('sort_order', ascending: true);
 
+      final list = (imgs as List);
       final newImages = <_NetImage>[
-        for (final r in (imgs as List))
+        for (final r in list)
           _NetImage(
             id: r['id'] as String,
             url: (() {
@@ -220,6 +358,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
       });
 
       if (changed) {
+        _nameByIndex.clear();
         _panoCache.clear();
         if (_images.isNotEmpty) {
           await _preparePano(_currentIndex.clamp(0, _images.length - 1));
@@ -236,6 +375,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
   Future<void> _reloadHotspots() async {
     try {
       _hotspotsByIndex.clear();
+      _nameByIndex.clear();
       if (_images.isEmpty) return;
 
       final hsRows = await _sb
@@ -275,13 +415,20 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
         }
         latDeg = latDeg.clamp(-90.0, 90.0);
 
+        final label = (r['label'] as String?)?.trim();
+
         final hs = _HS(
           longitudeDeg: lonDeg,
           latitudeDeg: latDeg,
           targetIndex: tgtIdx,
-          label: (r['label'] as String?),
+          label: label,
         );
         _hotspotsByIndex.putIfAbsent(srcIdx, () => []).add(hs);
+
+        // Use hotspot label as the human name for the TARGET image
+        if (label != null && label.isNotEmpty) {
+          _nameByIndex.putIfAbsent(tgtIdx, () => label);
+        }
       }
       if (mounted) setState(() {});
     } catch (_) {}
@@ -314,7 +461,8 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     } catch (_) {}
   }
 
-  // ---------------- Bootstrap ----------------
+  /* ---------------------------- Bootstrap ---------------------------- */
+
   Future<void> _bootstrap() async {
     setState(() {
       _loading = true;
@@ -342,54 +490,19 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     }
   }
 
-  // -------- Loader: pad to 2:1 WITHOUT stretching --------
-  Future<Uint8List> _load2to1NoStretch(String url) async {
-    final resp = await http.get(Uri.parse(url));
-    if (resp.statusCode != 200 || resp.bodyBytes.isEmpty) {
-      throw Exception('Fetch failed: ${resp.statusCode}');
-    }
-    final src = img.decodeImage(resp.bodyBytes);
-    if (src == null) throw Exception('Cannot decode image');
+  /* ---------------------- Normalize & Prepare ----------------------- */
 
-    final w = src.width;
-    final h = src.height;
-    final ratio = w / h;
-
-    if ((ratio - 2.0).abs() < 0.01) {
-      // already ~2:1 → standardize
-      return Uint8List.fromList(img.encodeJpg(src, quality: 92));
-    }
-
-    // Blur-pad to exact 2:1 without scaling the subject.
-    late final int outW;
-    late final int outH;
-    int dstX = 0, dstY = 0;
-
-    if (ratio < 2.0) {
-      // Narrow/tall → add left & right bands
-      outW = 2 * h;
-      outH = h;
-      dstX = ((outW - w) / 2).round();
-      dstY = 0;
-    } else {
-      // Wide/short → add top & bottom bands
-      outW = w;
-      outH = (w / 2).round();
-      dstX = 0;
-      dstY = ((outH - h) / 2).round();
-    }
-
-    final bgSquare = img.copyResizeCropSquare(src, size: math.min(outW, outH));
-    final bg = img.gaussianBlur(
-      img.copyResize(bgSquare, width: outW, height: outH),
-      radius: 18,
+  // Tiny preview (fast) while we process the normalized pano
+  Widget _previewForUrl(String url) {
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: double.infinity,
+      errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black12),
     );
-
-    img.compositeImage(bg, src, dstX: dstX, dstY: dstY);
-    return Uint8List.fromList(img.encodeJpg(bg, quality: 92));
   }
 
-  // Normalize and cache.
   Future<void> _preparePano(int index) async {
     if (!mounted) return;
     setState(() {
@@ -398,28 +511,82 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     });
 
     try {
-      if (_panoCache.containsKey(index)) {
-        _currentBytes = _panoCache[index];
+      final cached = _panoCache.get(index);
+      if (cached != null) {
+        _currentBytes = cached;
       } else {
         final url = _images[index].url;
         if (url.isEmpty) throw Exception('Panorama URL is empty.');
-        final bytes = await _load2to1NoStretch(url);
-        _panoCache[index] = bytes;
+
+        // 1) Fetch (8s timeout + 1 retry)
+        final raw = await _fetchBytesWithRetry(url);
+
+        // 2) Normalize to 2:1 without stretching (isolate)
+        final bytes = await compute<_NormalizeArgs, Uint8List>(
+          _normalize2to1Worker,
+          _NormalizeArgs(
+            bytes: raw,
+            maxW: 2000, // ↑ better clarity
+            maxH: 1000,
+            blurRadius: 10,
+            quality: 88,
+          ),
+        );
+
+        _panoCache.set(index, bytes);
         _currentBytes = bytes;
       }
 
-      // center camera within allowed slice
+      // Center camera within allowed slice
       final centerYaw = (_minYawDeg + _maxYawDeg) / 2.0;
       _applyYaw(centerYaw);
       _targetLonDeg = centerYaw;
 
-      setState(() => _imageLoading = false);
+      if (mounted) {
+        setState(() => _imageLoading = false);
+      }
+
+      // Prefetch next 2 panos (best-effort)
+      _prefetchAround(index);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _imageError = 'Could not load panorama.';
         _imageLoading = false;
       });
+    }
+  }
+
+  void _prefetchAround(int i) {
+    final order = <int>[
+      if (i + 1 < _images.length) i + 1,
+      if (i - 1 >= 0) i - 1,
+      if (i + 2 < _images.length) i + 2,
+    ];
+    for (final idx in order) {
+      if (_panoCache.get(idx) != null) continue;
+      final url = _images[idx].url;
+      if (url.isEmpty) continue;
+
+      unawaited(() async {
+        try {
+          final raw = await _fetchBytesWithRetry(
+            url,
+            timeout: const Duration(seconds: 6),
+          );
+          final bytes = await compute<_NormalizeArgs, Uint8List>(
+            _normalize2to1Worker,
+            _NormalizeArgs(
+              bytes: raw,
+              maxW: 2000,
+              maxH: 1000,
+              blurRadius: 10,
+              quality: 88,
+            ),
+          );
+          _panoCache.set(idx, bytes);
+        } catch (_) {}
+      }());
     }
   }
 
@@ -430,15 +597,17 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     await _preparePano(clamped);
   }
 
-  // -------- camera helpers --------
+  /* --------------------------- Camera --------------------------- */
+
+  // Crescent-like vertical bow: dips toward the center of the span, rises near edges.
   double _curvedLatitudeForYaw(double lonDeg) {
     if (kCurveMaxDeg == 0.0) return 0.0;
     final span = (_maxYawDeg - _minYawDeg);
     if (span <= 0) return 0.0;
     final t = ((lonDeg - _minYawDeg) / span) * 2.0 - 1.0; // [-1,1]
     final absPow = math.pow(t.abs(), kCurvePower).toDouble();
-    final factor = (1.0 - absPow).clamp(0.0, 1.0);
-    return -kCurveMaxDeg * factor;
+    final factor = (1.0 - absPow).clamp(0.0, 1.0); // 1 at center → 0 at edges
+    return -kCurveMaxDeg * factor; // negative = slight look-down at center
   }
 
   void _applyYaw(double lonDeg) {
@@ -461,7 +630,6 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     }
   }
 
-  // Just set the target; the ticker eases the camera toward it.
   void _aimYaw(double lonDeg) {
     _targetLonDeg = lonDeg.clamp(_minYawDeg, _maxYawDeg).toDouble();
   }
@@ -485,7 +653,8 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     );
   }
 
-  // ---------------- UI ----------------
+  /* ----------------------------- UI ----------------------------- */
+
   @override
   Widget build(BuildContext context) {
     final leftOpacity = _leftEdgeOpacity();
@@ -494,7 +663,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
     final heroHeight = math.min(
       420.0,
       MediaQuery.of(context).size.height * 0.43,
-    ); // big hero pano
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A3D62),
@@ -507,7 +676,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                   ? _ErrorBox(text: _error!)
                   : Column(
                       children: [
-                        // ---------- HERO PANORAMA ----------
+                        // ---------------- HERO PANORAMA ----------------
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                           child: SizedBox(
@@ -516,16 +685,21 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                               borderRadius: BorderRadius.circular(12),
                               child: Stack(
                                 children: [
+                                  // Tiny preview (fast) while preparing the normalized pano
+                                  if (_images.isNotEmpty)
+                                    Positioned.fill(
+                                      child: _previewForUrl(
+                                        _images[_currentIndex].url,
+                                      ),
+                                    ),
+
+                                  // Normalized pano (replaces preview when ready)
                                   Positioned.fill(
                                     child: _imageError != null
                                         ? _ErrorBox(text: _imageError!)
                                         : (_imageLoading ||
                                               _currentBytes == null)
-                                        ? const Center(
-                                            child: CircularProgressIndicator(
-                                              color: Colors.white,
-                                            ),
-                                          )
+                                        ? const SizedBox()
                                         : Panorama(
                                             sensorControl: SensorControl.None,
                                             longitude: _viewLonDeg,
@@ -535,7 +709,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                                             minLongitude: _minYawDeg,
                                             maxLongitude: _maxYawDeg,
 
-                                            // Lock vertical & fixed zoom
+                                            // Lock vertical & fixed zoom (farther view)
                                             minLatitude: _viewLatDeg,
                                             maxLatitude: _viewLatDeg,
                                             minZoom: kFixedZoom,
@@ -726,7 +900,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                           ),
                         ),
 
-                        // ---------- THUMBNAIL STRIP ----------
+                        // ---------------- THUMBNAIL STRIP ----------------
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                           child: Container(
@@ -745,6 +919,8 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                                         const SizedBox(width: 10),
                                     itemBuilder: (context, i) {
                                       final url = _images[i].url;
+                                      final label = (_nameByIndex[i] ?? '')
+                                          .trim();
                                       return GestureDetector(
                                         onTap: () => _goTo(i),
                                         child: ClipRRect(
@@ -753,7 +929,6 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                                           ),
                                           child: Stack(
                                             children: [
-                                              // Use network thumbs (lightweight)
                                               Image.network(
                                                 url,
                                                 width: 120,
@@ -789,7 +964,9 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                                                         ),
                                                   ),
                                                   child: Text(
-                                                    'View ${i + 1}',
+                                                    label.isNotEmpty
+                                                        ? label
+                                                        : 'View ${i + 1}',
                                                     style: const TextStyle(
                                                       color: Colors.white,
                                                       fontSize: 12,
@@ -823,7 +1000,7 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
                           ),
                         ),
 
-                        // ---------- BOTTOM INFO PANEL ----------
+                        // ---------------- BOTTOM INFO PANEL ----------------
                         Expanded(
                           child: Container(
                             width: double.infinity,
@@ -950,6 +1127,8 @@ class _LTourState extends State<LTour> with SingleTickerProviderStateMixin {
   );
 }
 
+/* ============================== Widgets ============================== */
+
 class _ErrorBox extends StatelessWidget {
   final String text;
   const _ErrorBox({required this.text});
@@ -969,7 +1148,8 @@ class _ErrorBox extends StatelessWidget {
   }
 }
 
-/* helpers */
+/* =============================== Models ============================== */
+
 class _NetImage {
   final String id;
   final String url;

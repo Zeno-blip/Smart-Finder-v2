@@ -1,11 +1,14 @@
 // login.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:smart_finder/LANDLORD/DASHBOARD.dart';
 import 'package:smart_finder/LANDLORD/FORGOT.dart';
+import 'package:smart_finder/LANDLORD/FORGOT2.dart';
 import 'package:smart_finder/LANDLORD/REGISTER.dart';
-import 'package:smart_finder/LANDLORD/VERIFICATION.dart'; // <— add
+import 'package:smart_finder/LANDLORD/VERIFICATION.dart';
 
 class Login extends StatefulWidget {
   const Login({super.key});
@@ -15,31 +18,83 @@ class Login extends StatefulWidget {
 }
 
 class _LoginState extends State<Login> {
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
   bool _rememberMe = false;
   bool _loading = false;
 
-  final supabase = Supabase.instance.client;
+  final sb = Supabase.instance.client;
+
+  // ⬇️ You had this before, we can keep the field but we won't listen anymore
+  StreamSubscription<AuthState>? _authSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedCredentials();
+
+    // 🔕 Removed auth listener here because we moved it to ForgotPassword
+    // _authSub = sb.auth.onAuthStateChange.listen(...);
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  // 🔹 Load saved credentials
+  Future<void> _loadSavedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedEmail = prefs.getString('saved_email');
+    final savedPass = prefs.getString('saved_pass');
+    final remember = prefs.getBool('remember_me') ?? false;
+
+    if (remember && savedEmail != null && savedPass != null) {
+      setState(() {
+        _email.text = savedEmail;
+        _password.text = savedPass;
+        _rememberMe = true;
+      });
+    }
+  }
+
+  // 🔹 Save or clear credentials
+  Future<void> _saveCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_rememberMe) {
+      await prefs.setString('saved_email', _email.text.trim());
+      await prefs.setString('saved_pass', _password.text.trim());
+      await prefs.setBool('remember_me', true);
+    } else {
+      await prefs.remove('saved_email');
+      await prefs.remove('saved_pass');
+      await prefs.setBool('remember_me', false);
+    }
+  }
 
   Future<void> _handleLogin() async {
-    final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
-    if (email.isEmpty || password.isEmpty) {
+    final email = _email.text.trim();
+    final pass = _password.text.trim();
+    if (email.isEmpty || pass.isEmpty) {
       _msg("Please enter email and password.");
       return;
     }
 
     setState(() => _loading = true);
     try {
-      final res = await supabase.auth.signInWithPassword(
+      final res = await sb.auth.signInWithPassword(
         email: email,
-        password: password,
+        password: pass,
       );
       final authUser = res.user;
       if (authUser == null) throw const AuthException('Invalid credentials.');
 
-      final profile = await supabase
+      await _saveCredentials(); // ✅ Save when successful
+
+      final profile = await sb
           .from('users')
           .select('id, role, full_name, is_verified, email')
           .eq('id', authUser.id)
@@ -49,14 +104,13 @@ class _LoginState extends State<Login> {
       role ??= (authUser.userMetadata?['role'] as String?)?.toLowerCase();
 
       if (role != 'landlord') {
-        await supabase.auth.signOut();
+        await sb.auth.signOut();
         _msg("This account is not a landlord.");
         return;
       }
 
-      // 🔒 Gate: must be verified first
       if (profile?['is_verified'] == false) {
-        await supabase.auth.signOut();
+        await sb.auth.signOut();
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
@@ -118,7 +172,7 @@ class _LoginState extends State<Login> {
                 ),
                 const SizedBox(height: 10),
                 TextField(
-                  controller: _emailController,
+                  controller: _email,
                   style: const TextStyle(color: Colors.black, height: 2),
                   decoration: InputDecoration(
                     filled: true,
@@ -133,7 +187,7 @@ class _LoginState extends State<Login> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: _passwordController,
+                  controller: _password,
                   obscureText: true,
                   style: const TextStyle(color: Colors.black, height: 2),
                   decoration: InputDecoration(
@@ -165,7 +219,7 @@ class _LoginState extends State<Login> {
                     ),
                     TextButton(
                       onPressed: () {
-                        Navigator.push(
+                        Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(
                             builder: (_) => const ForgotPassword(),
@@ -214,7 +268,7 @@ class _LoginState extends State<Login> {
                     ),
                     TextButton(
                       onPressed: () {
-                        Navigator.push(
+                        Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(builder: (_) => const RegisterL()),
                         );

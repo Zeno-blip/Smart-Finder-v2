@@ -82,27 +82,32 @@ class _TotalRoomState extends State<TotalRoom> {
   }
 
   // ---------- UTILITIES ----------
+  /// Normalize availability to 'available' or 'not_available'
   String _availability(Map<String, dynamic> r) {
     final a = (r['availability_status'] ?? '').toString().toLowerCase();
     if (a == 'available' || a == 'not_available') return a;
+
     final s = (r['status'] ?? '').toString().toLowerCase();
     return s == 'available' ? 'available' : 'not_available';
   }
 
+  bool _isVacant(Map<String, dynamic> r) => _availability(r) == 'available';
+
+  /// Opens the proper detail screen:
+  /// - available  -> RoomAvailable
+  /// - not_available -> RoomNotAvailable
   void _openRoom(Map<String, dynamic> r) {
-    final bool isAvail = _availability(r) == 'available';
+    final bool isVacant = _isVacant(r);
 
     // Force a Map<String, dynamic> (in case r has dynamic keys/values)
     final Map<String, dynamic> room = Map<String, dynamic>.from(r);
 
-    // Make the ternary produce a Widget
-    final Widget page = isAvail
+    final Widget page = isVacant
         ? avail.RoomAvailable(roomData: room)
         : notavail.RoomNotAvailable(roomData: room);
 
     Navigator.push(context, MaterialPageRoute(builder: (_) => page));
   }
-
 
   // ---------- UI ----------
   @override
@@ -148,7 +153,9 @@ class _TotalRoomState extends State<TotalRoom> {
                   .toString();
               final location = (r['location'] ?? '').toString();
               final monthly = r['monthly_payment'];
-              final isAvail = _availability(r) == 'available';
+
+              final bool isVacant = _isVacant(r);
+              final String statusLabel = isVacant ? 'Vacant' : 'Occupied';
 
               return Container(
                 decoration: BoxDecoration(
@@ -185,16 +192,16 @@ class _TotalRoomState extends State<TotalRoom> {
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: isAvail
+                              color: isVacant
                                   ? Colors.green.shade100
                                   : Colors.grey.shade300,
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(color: Colors.black12),
                             ),
                             child: Text(
-                              isAvail ? 'available' : 'not_available',
+                              statusLabel, // now "Vacant" or "Occupied"
                               style: TextStyle(
-                                color: isAvail
+                                color: isVacant
                                     ? Colors.green.shade800
                                     : Colors.grey.shade800,
                                 fontWeight: FontWeight.w600,

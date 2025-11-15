@@ -13,10 +13,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url:
-        'https://vvvkosldcbdgnxovstwj.supabase.co', // Replace with your Supabase URL
+    url: 'https://vvvkosldcbdgnxovstwj.supabase.co',
     anonKey:
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2dmtvc2xkY2JkZ254b3ZzdHdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0NzU2OTksImV4cCI6MjA3MjA1MTY5OX0.HrW42OpeA954q7yBAxtqQ4ftRtnjpY_cekN02cLGNOs', // Replace with your public anon key
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2dmtvc2xkY2JkZ254b3ZzdHdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0NzU2OTksImV4cCI6MjA3MjA1MTY5OX0.HrW42OpeA954q7yBAxtqQ4ftRtnjpY_cekN02cLGNOs',
   );
 
   runApp(const MyApp());
@@ -27,6 +26,6 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(debugShowCheckedModeBanner: false, home: Welcome());
+    return const MaterialApp(debugShowCheckedModeBanner: false, home: Login());
   }
 }

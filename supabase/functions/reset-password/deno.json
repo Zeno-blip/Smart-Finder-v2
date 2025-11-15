@@ -1,0 +1,4 @@
+{
+    "entrypoint": "index.ts",
+    "verify_jwt": false
+}

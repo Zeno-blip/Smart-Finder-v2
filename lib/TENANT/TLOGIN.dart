@@ -1,6 +1,7 @@
 // lib/TENANT/tlogin.dart
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // <-- NEW
 
 import 'TAPARTMENT.dart';
 import 'TFORGOT.dart';
@@ -20,6 +21,16 @@ class _LoginTState extends State<LoginT> {
   bool _loading = false;
   final _sb = Supabase.instance.client;
 
+  // keys for SharedPreferences
+  static const String _rememberKey = 'tenant_remember_me';
+  static const String _emailKey = 'tenant_saved_email';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRememberMe(); // load saved email + checkbox
+  }
+
   @override
   void dispose() {
     _email.dispose();
@@ -29,6 +40,43 @@ class _LoginTState extends State<LoginT> {
 
   void _toast(String m) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+
+  // -------- Remember me: load saved state --------
+  Future<void> _loadRememberMe() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedRemember = prefs.getBool(_rememberKey) ?? false;
+      final savedEmail = savedRemember
+          ? (prefs.getString(_emailKey) ?? '')
+          : '';
+
+      if (!mounted) return;
+      setState(() {
+        _remember = savedRemember;
+        if (savedEmail.isNotEmpty) {
+          _email.text = savedEmail;
+        }
+      });
+    } catch (_) {
+      // ignore prefs errors silently
+    }
+  }
+
+  // Save or clear email based on _remember
+  Future<void> _applyRememberMe(String email) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_remember) {
+        await prefs.setBool(_rememberKey, true);
+        await prefs.setString(_emailKey, email);
+      } else {
+        await prefs.setBool(_rememberKey, false);
+        await prefs.remove(_emailKey);
+      }
+    } catch (_) {
+      // ignore prefs errors silently
+    }
+  }
 
   Future<void> _login() async {
     final email = _email.text.trim();
@@ -81,6 +129,9 @@ class _LoginTState extends State<LoginT> {
         _toast('Please verify your email first.');
         return;
       }
+
+      // ✅ Remember me logic after successful login
+      await _applyRememberMe(email);
 
       if (!mounted) return;
       Navigator.pushReplacement(

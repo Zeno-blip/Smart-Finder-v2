@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../TOUR.dart';
 import 'EditRoom.dart';
-import 'addtenant.dart'; // your AddTenant screen
 
 class RoomAvailable extends StatefulWidget {
   final Map<String, dynamic> roomData;
@@ -169,7 +168,7 @@ class _RoomAvailableState extends State<RoomAvailable> {
             const SizedBox(height: 20),
             _roomDetailsBox(room),
             const SizedBox(height: 20),
-            _actionButtons(room),
+            _actionButtons(room), // <- updated to hide Add Tenant when occupied
           ],
         ),
       ),
@@ -308,6 +307,13 @@ class _RoomAvailableState extends State<RoomAvailable> {
   }
 
   Widget _actionButtons(Map<String, dynamic> room) {
+    // Determine current availability from room data
+    final availability =
+        (room['availability_status'] ?? room['status'] ?? 'available')
+            .toString()
+            .toLowerCase();
+    final bool isAvailable = availability == 'available';
+
     return Row(
       children: [
         Expanded(
@@ -332,41 +338,59 @@ class _RoomAvailableState extends State<RoomAvailable> {
           ),
         ),
         const SizedBox(width: 10),
-        Expanded(
-          child: ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF003049),
-              padding: const EdgeInsets.symmetric(vertical: 20),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
+
+        // Only show "Add Tenant" while room is available/vacant
+        if (isAvailable)
+          Expanded(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF003049),
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              onPressed: () {
+                final landlordId = _sb.auth.currentUser?.id;
+                if (landlordId == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('No logged-in landlord found.'),
+                    ),
+                  );
+                  return;
+                }
+
+                final roomId = _resolveRoomId();
+                if (roomId == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Missing room id.')),
+                  );
+                  return;
+                }
+
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: Colors.white,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(16),
+                    ),
+                  ),
+                  builder: (_) => _TenantPicker(
+                    supabase: _sb,
+                    landlordId: landlordId,
+                    roomId: roomId, // <-- pass roomId here
+                  ),
+                );
+              },
+              child: const Text(
+                "Add Tenant",
+                style: TextStyle(fontSize: 20, color: Colors.white),
               ),
             ),
-            onPressed: () {
-              final id = _resolveRoomId();
-              if (id == null) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Missing room id.')),
-                );
-                return;
-              }
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => AddTenant(
-                    roomId: id,
-                    apartmentName: room['apartment_name'] as String?,
-                    initialRoomNo: room['id']?.toString(),
-                    initialFloorNo: (room['floor_number'] ?? '').toString(),
-                  ),
-                ),
-              );
-            },
-            child: const Text(
-              "Add Tenant",
-              style: TextStyle(fontSize: 20, color: Colors.white),
-            ),
           ),
-        ),
       ],
     );
   }
@@ -438,6 +462,382 @@ class _InfoBox extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Bottom sheet tenant picker that shows tenants
+/// who have conversations/messages with this landlord.
+class _TenantPicker extends StatefulWidget {
+  final SupabaseClient supabase;
+  final String landlordId; // auth.users.id of landlord
+  final String roomId; // <-- NEW: which room we're assigning to
+
+  const _TenantPicker({
+    required this.supabase,
+    required this.landlordId,
+    required this.roomId,
+  });
+
+  @override
+  State<_TenantPicker> createState() => _TenantPickerState();
+}
+
+class _TenantPickerState extends State<_TenantPicker> {
+  final TextEditingController _searchCtrl = TextEditingController();
+
+  bool _loading = true;
+  List<Map<String, String>> _allPeople = [];
+  String _q = '';
+  String? _selectedId; // tenant's auth.users.id
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPeople();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadPeople() async {
+    try {
+      final meId = widget.landlordId; // auth.users.id
+
+      // 1) Get landlord_profiles.id for this user (if exists)
+      String? landlordProfileId;
+      try {
+        final lpRow = await widget.supabase
+            .from('landlord_profiles')
+            .select('id')
+            .eq('user_id', meId)
+            .maybeSingle();
+
+        if (lpRow != null && lpRow['id'] != null) {
+          landlordProfileId = lpRow['id'].toString();
+        }
+      } catch (_) {
+        // ignore, we'll still use meId
+      }
+
+      // 2) landlord_ids that might be stored in conversations
+      final landlordIds = <String>{};
+      if (meId.isNotEmpty) landlordIds.add(meId);
+      if (landlordProfileId != null && landlordProfileId.isNotEmpty) {
+        landlordIds.add(landlordProfileId);
+      }
+
+      if (landlordIds.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _allPeople = [];
+          _loading = false;
+        });
+        return;
+      }
+
+      // 3) conversations where landlord_id is any of those
+      final convs = await widget.supabase
+          .from('conversations')
+          .select('tenant_id, landlord_id')
+          .inFilter('landlord_id', landlordIds.toList());
+
+      final tenantIds = <String>{};
+      for (final row in (convs as List? ?? const [])) {
+        final tid = row['tenant_id']?.toString();
+        if (tid != null && tid.isNotEmpty) tenantIds.add(tid);
+      }
+
+      if (tenantIds.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _allPeople = [];
+          _loading = false;
+        });
+        return;
+      }
+
+      // 4) tenant_profile.user_id matches conversations.tenant_id
+      final profiles = await widget.supabase
+          .from('tenant_profile')
+          .select('user_id, full_name')
+          .inFilter('user_id', tenantIds.toList());
+
+      final people = <Map<String, String>>[];
+      for (final row in (profiles as List? ?? const [])) {
+        final id = row['user_id']?.toString();
+        final nameRaw = row['full_name']?.toString() ?? '';
+        final name = nameRaw.trim().isEmpty ? 'Unknown tenant' : nameRaw.trim();
+
+        if (id != null && id.isNotEmpty) {
+          people.add({'id': id, 'name': name});
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _allPeople = people;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to load tenants: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _allPeople
+        .where((p) => p["name"]!.toLowerCase().contains(_q.toLowerCase()))
+        .toList();
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Search bar
+            Container(
+              height: 54,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.black26, width: 1),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  const Icon(Icons.search, color: Colors.black54),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchCtrl,
+                      decoration: const InputDecoration(
+                        hintText: 'Search tenant',
+                        border: InputBorder.none,
+                      ),
+                      onChanged: (v) => setState(() => _q = v),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(),
+              )
+            else if (filtered.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'No tenants found.\n(Only tenants who have conversations with you will show here.)',
+                  textAlign: TextAlign.center,
+                ),
+              )
+            else
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, i) {
+                    final p = filtered[i];
+                    final isChecked = _selectedId == p["id"];
+
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.black87, width: 1),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: ListTile(
+                        onTap: () => setState(() {
+                          _selectedId = isChecked ? null : p["id"];
+                        }),
+                        leading: const CircleAvatar(
+                          backgroundColor: Color(0xFFECECEC),
+                          radius: 22,
+                          child: Icon(Icons.person, color: Colors.black54),
+                        ),
+                        title: Text(
+                          p["name"] ?? '',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        trailing: InkWell(
+                          borderRadius: BorderRadius.circular(6),
+                          onTap: () => setState(() {
+                            _selectedId = isChecked ? null : p["id"];
+                          }),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: Colors.black87,
+                                width: 2,
+                              ),
+                              color: isChecked
+                                  ? Colors.black87
+                                  : Colors.transparent,
+                            ),
+                            alignment: Alignment.center,
+                            child: isChecked
+                                ? const Icon(
+                                    Icons.check,
+                                    size: 18,
+                                    color: Colors.white,
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            const SizedBox(height: 14),
+
+            // Bottom buttons
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.black87, width: 1.5),
+                      foregroundColor: Colors.black87,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.black87,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    onPressed: () async {
+                      final sel = _allPeople.firstWhere(
+                        (p) => p["id"] == _selectedId,
+                        orElse: () => const {"id": "", "name": ""},
+                      );
+
+                      final pickedName = sel["name"]!;
+                      if (pickedName.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('No tenant selected.'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                        return;
+                      }
+
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Confirm selection'),
+                          content: Text(
+                            'Are you sure this is the right tenant?\n\n$pickedName',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text('No'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text('Yes, add'),
+                            ),
+                          ],
+                        ),
+                      );
+
+                      if (confirmed == true) {
+                        try {
+                          // 1) Mark the room as not available / occupied
+                          await widget.supabase
+                              .from('rooms')
+                              .update({'availability_status': 'not_available'})
+                              .eq('id', widget.roomId);
+
+                          // 2) (Optional) If you have a room_tenants table, insert here:
+                          // await widget.supabase.from('room_tenants').insert({
+                          //   'room_id': widget.roomId,
+                          //   'tenant_user_id': sel["id"],
+                          // });
+
+                          if (!mounted) return;
+                          Navigator.pop(context); // close bottom sheet
+
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Tenant added. Room is now occupied.',
+                              ),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        } catch (e) {
+                          if (!mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Failed to assign tenant: $e'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                    child: const Text('Add'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

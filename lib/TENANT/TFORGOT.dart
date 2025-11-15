@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:smart_finder/TENANT/TFORGOT2.dart';
 
 class TenantForgotPassword extends StatefulWidget {
@@ -10,6 +13,90 @@ class TenantForgotPassword extends StatefulWidget {
 
 class _TenantForgotPasswordState extends State<TenantForgotPassword> {
   final TextEditingController _emailController = TextEditingController();
+  final _sb = Supabase.instance.client;
+
+  bool _sending = false;
+  bool _canResend = true;
+  Timer? _resendTimer;
+  int _resendSeconds = 0;
+
+  // Same redirect you used for landlord (smartfinder://reset)
+  static const String _redirectUri = 'smartfinder://reset';
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _resendTimer?.cancel();
+    super.dispose();
+  }
+
+  void _snack(String msg) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+
+  bool _looksLikeEmail(String v) =>
+      RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(v.trim());
+
+  void _startCooldown([int s = 60]) {
+    setState(() {
+      _canResend = false;
+      _resendSeconds = s;
+    });
+    _resendTimer?.cancel();
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      if (_resendSeconds <= 1) {
+        t.cancel();
+        setState(() {
+          _canResend = true;
+          _resendSeconds = 0;
+        });
+      } else {
+        setState(() => _resendSeconds -= 1);
+      }
+    });
+  }
+
+  /// 🔹 Call the Edge Function `reset-password` (same as landlord)
+  Future<void> _sendResetEmailViaEdge() async {
+    final email = _emailController.text.trim();
+
+    if (!_looksLikeEmail(email)) {
+      _snack('Please enter a valid email address.');
+      return;
+    }
+
+    setState(() => _sending = true);
+
+    try {
+      final resp = await _sb.functions.invoke(
+        'reset-password',
+        body: {'email': email, 'redirectTo': _redirectUri},
+      );
+
+      final status = resp.status;
+      final data = resp.data;
+
+      if (status == 200) {
+        final message = (data is Map && data['message'] is String)
+            ? data['message'] as String
+            : 'If that email exists, a reset link was sent.';
+        _snack(message);
+        _startCooldown(60);
+      } else {
+        String err;
+        if (data is Map && data['error'] is String) {
+          err = data['error'] as String;
+        } else {
+          err = 'HTTP $status';
+        }
+        _snack('Reset failed: $err');
+      }
+    } catch (e) {
+      _snack('Network error: $e');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -80,6 +167,7 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                     // Email field
                     TextField(
                       controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
                       decoration: InputDecoration(
                         prefixIcon: const Icon(Icons.email_outlined),
                         hintText: "Email Address",
@@ -107,9 +195,9 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         ElevatedButton(
-                          onPressed: () {
-                            Navigator.pop(context);
-                          },
+                          onPressed: _sending
+                              ? null
+                              : () => Navigator.pop(context),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.grey.shade300,
                             foregroundColor: Colors.black,
@@ -122,16 +210,7 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                         ),
                         const SizedBox(width: 12),
                         ElevatedButton(
-                          onPressed: () {
-                            // ✅ Navigate to TenantForgotPassword2
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const TenantForgotPassword2(),
-                              ),
-                            );
-                          },
+                          onPressed: _sending ? null : _sendResetEmailViaEdge,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.lightBlueAccent,
                             foregroundColor: Colors.white,
@@ -140,7 +219,16 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                           ),
-                          child: const Text("Submit"),
+                          child: _sending
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Text("Submit"),
                         ),
                       ],
                     ),
@@ -168,9 +256,9 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                     // Resend email option
                     Center(
                       child: ElevatedButton.icon(
-                        onPressed: () {
-                          // Resend email functionality
-                        },
+                        onPressed: (!_canResend || _sending)
+                            ? null
+                            : _sendResetEmailViaEdge,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blueGrey.shade100,
                           foregroundColor: Colors.black,
@@ -179,7 +267,11 @@ class _TenantForgotPasswordState extends State<TenantForgotPassword> {
                           ),
                         ),
                         icon: const Icon(Icons.refresh),
-                        label: const Text("Resend Email"),
+                        label: Text(
+                          _canResend
+                              ? "Resend Email"
+                              : "Resend in $_resendSeconds s",
+                        ),
                       ),
                     ),
                   ],

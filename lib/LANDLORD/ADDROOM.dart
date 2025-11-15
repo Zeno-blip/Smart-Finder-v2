@@ -90,6 +90,7 @@ class _AddroomState extends State<Addroom> {
   Map<int, List<AppHotspot>> hotspotsByImageIndex = {};
 
   final TextEditingController floorCtrl = TextEditingController();
+  final TextEditingController roomNameCtrl = TextEditingController(); // NEW
   final TextEditingController nameCtrl = TextEditingController();
   final TextEditingController locationCtrl = TextEditingController();
   final TextEditingController monthlyCtrl = TextEditingController();
@@ -107,6 +108,7 @@ class _AddroomState extends State<Addroom> {
   @override
   void dispose() {
     floorCtrl.dispose();
+    roomNameCtrl.dispose();
     nameCtrl.dispose();
     locationCtrl.dispose();
     monthlyCtrl.dispose();
@@ -226,6 +228,13 @@ class _AddroomState extends State<Addroom> {
                         "Enter Floor Number",
                         isNumber: true,
                         controller: floorCtrl,
+                      ),
+
+                      _fieldLabel('Room Name / Number'), // NEW
+                      _buildTextField(
+                        Icons.meeting_room,
+                        "e.g. Room 101, Bedspace A",
+                        controller: roomNameCtrl,
                       ),
 
                       _fieldLabel('Apartment Name'),
@@ -614,12 +623,14 @@ class _AddroomState extends State<Addroom> {
     final monthly = double.tryParse(monthlyCtrl.text.trim());
     final deposit = double.tryParse(depositCtrl.text.trim());
     final floor = int.tryParse(floorCtrl.text.trim());
+    final roomName = roomNameCtrl.text.trim(); // NEW
 
     final room = await supabase
         .from('rooms')
         .insert({
           'landlord_id': user.id,
           'floor_number': floor,
+          'room_name': roomName.isEmpty ? null : roomName, // NEW FIELD
           'apartment_name': aptName,
           'location': location,
           'monthly_payment': monthly,
@@ -895,7 +906,6 @@ class HotspotEditor extends StatefulWidget {
 class _HotspotEditorState extends State<HotspotEditor> {
   late Map<int, List<AppHotspot>> hotspotsByImageIndex;
   int currentIndex = 0;
-
 
   // camera (radians)
   double _viewLon = 0.0;
@@ -1381,9 +1391,6 @@ class _HotspotEditorState extends State<HotspotEditor> {
                                 ),
                             ],
                           ),
-
-                          // ⟵ TAP-TO-PLACE overlay: pixel x → exact yaw
-                      
 
                           // Edge “force field” overlays
                           Positioned.fill(
